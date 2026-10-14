@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+@theme {
+  --color-destellos-pink: #FDF3F6;
+  --color-destellos-lilac: #D8C3E5;
+  --color-destellos-lilac-dark: #B592CC;
+  --color-destellos-gold: #D4AF37;
+  --color-destellos-dark: #333333;
+}
+
+body {
+  background-color: var(--color-destellos-pink);
+  color: var(--color-destellos-dark);
+  font-family: system-ui, -apple-system, sans-serif;
+  margin: 0;
+}
