@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-@theme {
+:root {
   --color-destellos-pink: #FDF3F6;
   --color-destellos-lilac: #D8C3E5;
   --color-destellos-lilac-dark: #B592CC;
@@ -13,4 +13,40 @@ body {
   color: var(--color-destellos-dark);
   font-family: system-ui, -apple-system, sans-serif;
   margin: 0;
+}
+
+.bg-destellos-pink {
+  background-color: var(--color-destellos-pink);
+}
+
+.bg-destellos-pink\/60 {
+  background-color: rgb(253 243 246 / 0.6);
+}
+
+.bg-destellos-pink\/50 {
+  background-color: rgb(253 243 246 / 0.5);
+}
+
+.bg-destellos-lilac {
+  background-color: var(--color-destellos-lilac);
+}
+
+.bg-destellos-lilac\/60 {
+  background-color: rgb(216 195 229 / 0.6);
+}
+
+.hover\:bg-destellos-lilac:hover {
+  background-color: var(--color-destellos-lilac);
+}
+
+.text-destellos-gold {
+  color: var(--color-destellos-gold);
+}
+
+.text-destellos-dark {
+  color: var(--color-destellos-dark);
+}
+
+.hover\:text-destellos-dark:hover {
+  color: var(--color-destellos-dark);
 }
