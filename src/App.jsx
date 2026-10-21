@@ -3,10 +3,11 @@ import { supabase } from './supabaseClient'
 import { 
   ShoppingBag, Package, PlusCircle, Search, Trash2, 
   Eye, EyeOff, Edit2, Check, X, Camera, Image, Sparkles, RefreshCw,
-  Receipt, BarChart3, Banknote, CreditCard, Smartphone, Printer, ChevronDown, ChevronUp
+  Receipt, BarChart3, Banknote, CreditCard, Smartphone, Printer, ChevronDown, ChevronUp,
+  Tag, TrendingUp, AlertTriangle, Layers
 } from 'lucide-react'
 
-const CATEGORIAS = ['TODAS', 'CADENAS-COLLARES', 'ARETES', 'PULSERAS', 'ANILLOS', 'LLAVEROS']
+const CATEGORIAS = ['TODAS', 'CADENAS-COLLARES', 'ARETES', 'PULSERAS', 'ANILLOS', 'LLAVEROS', 'PINES']
 const METODOS_PAGO = [
   { id: 'Efectivo', label: 'Efectivo', icon: Banknote },
   { id: 'Transferencia', label: 'Transferencia', icon: Smartphone },
@@ -38,19 +39,49 @@ async function subirImagenASupabase(file) {
   return data.publicUrl
 }
 
+// Algoritmo para calcular paquetes de promoción (ej. 3x\$50 + 2x\$40 + 1x\$25)
+function calcularMejorPrecioPromo(cantidadTotal, precioBase, reglas) {
+  const reglasOrdenadas = [...(reglas || [])]
+    .filter(r => Number(r.cantidad) > 0 && Number(r.precio_total) > 0)
+    .sort((a, b) => Number(b.cantidad) - Number(a.cantidad))
+
+  let restante = cantidadTotal
+  let totalConPromo = 0
+  const paquetesAplicados = []
+
+  for (const regla of reglasOrdenadas) {
+    const cantRegla = Number(regla.cantidad)
+    const precioRegla = Number(regla.precio_total)
+    if (restante >= cantRegla) {
+      const numCombos = Math.floor(restante / cantRegla)
+      totalConPromo += numCombos * precioRegla
+      restante = restante % cantRegla
+      paquetesAplicados.push(`${numCombos > 1 ? `\${numCombos}x ` : ''}(${cantRegla}x$${precioRegla})`)
+    }
+  }
+
+  if (restante > 0) {
+    totalConPromo += restante * precioBase
+  }
+
+  return { totalConPromo, paquetesAplicados }
+}
+
 export default function App() {
-  // 'ventas' | 'inventario' | 'agregar' | 'tickets' | 'cortes'
+  // 'ventas' | 'inventario' | 'agregar' | 'promociones' | 'tickets' | 'cortes' | 'analiticas'
   const [vistaActiva, setVistaActiva] = useState('ventas')
   const [productos, setProductos] = useState([])
   const [ventas, setVentas] = useState([])
+  const [promociones, setPromociones] = useState([])
   const [cargando, setCargando] = useState(true)
   
-  // Estados para Ventas (POS)
+  // Estados para Ventas (POS) y Filtros
   const [categoriaFiltro, setCategoriaFiltro] = useState('TODAS')
+  const [tematicaFiltro, setTematicaFiltro] = useState('TODAS')
   const [busqueda, setBusqueda] = useState('')
   const [ocultarAgotados, setOcultarAgotados] = useState(false)
   const [carrito, setCarrito] = useState([])
-  const [descuento, setDescuento] = useState(0)
+  const [descuentoManual, setDescuentoManual] = useState(0)
   const [metodoPago, setMetodoPago] = useState('Efectivo')
   const [montoRecibido, setMontoRecibido] = useState('')
   const [procesandoVenta, setProcesandoVenta] = useState(false)
@@ -71,6 +102,7 @@ export default function App() {
     codigo: '',
     nombre_producto: '',
     categoria: 'CADENAS-COLLARES',
+    tematica: '',
     cantidad: 1,
     costo_produccion: '',
     precio_publico: '',
@@ -78,20 +110,34 @@ export default function App() {
   })
   const [subiendoImagen, setSubiendoImagen] = useState(false)
 
-  // Carga inicial asíncrona limpia (sin setState síncrono al inicio del efecto)
+  // Estados para Crear Promoción
+  const [nuevaPromo, setNuevaPromo] = useState({
+    nombre: '',
+    tipo_aplicacion: 'PRODUCTO', // 'PRODUCTO' | 'CATEGORIA'
+    producto_id: '',
+    categoria: 'PINES',
+    reglas: [
+      { cantidad: 2, precio_total: 40 },
+      { cantidad: 3, precio_total: 50 }
+    ]
+  })
+
+  // Carga inicial asíncrona limpia
   useEffect(() => {
     let cancelado = false
 
     async function cargaInicial() {
-      const [resProductos, resVentas] = await Promise.all([
+      const [resProductos, resVentas, resPromos] = await Promise.all([
         supabase.from('productos').select('*').order('nombre_producto', { ascending: true }),
-        supabase.from('ventas').select('*').order('created_at', { ascending: false })
+        supabase.from('ventas').select('*').order('created_at', { ascending: false }),
+        supabase.from('promociones').select('*').order('created_at', { ascending: false })
       ])
 
       if (cancelado) return
 
       if (!resProductos.error) setProductos(resProductos.data || [])
       if (!resVentas.error) setVentas(resVentas.data || [])
+      if (!resPromos.error) setPromociones(resPromos.data || [])
       setCargando(false)
     }
 
@@ -101,18 +147,28 @@ export default function App() {
     }
   }, [])
 
-  // Función para recargar datos manualmente o después de una acción
   async function recargarDatos() {
     setCargando(true)
-    const [resProductos, resVentas] = await Promise.all([
+    const [resProductos, resVentas, resPromos] = await Promise.all([
       supabase.from('productos').select('*').order('nombre_producto', { ascending: true }),
-      supabase.from('ventas').select('*').order('created_at', { ascending: false })
+      supabase.from('ventas').select('*').order('created_at', { ascending: false }),
+      supabase.from('promociones').select('*').order('created_at', { ascending: false })
     ])
 
     if (!resProductos.error) setProductos(resProductos.data || [])
     if (!resVentas.error) setVentas(resVentas.data || [])
+    if (!resPromos.error) setPromociones(resPromos.data || [])
     setCargando(false)
   }
+
+  // Lista dinámica de temáticas existentes en PINES para autocompletado y filtros
+  const tematicasPines = Array.from(
+    new Set(
+      productos
+        .filter(p => p.categoria === 'PINES' && p.tematica && p.tematica.trim() !== '')
+        .map(p => p.tematica.trim().toUpperCase())
+    )
+  ).sort()
 
   // --- LÓGICA DE COMPRESIÓN Y SUBIDA DE IMÁGENES ---
   async function comprimirYSubirImagen(file) {
@@ -129,7 +185,7 @@ export default function App() {
     }
   }
 
-  // --- LÓGICA DEL CARRITO Y VENTAS ---
+  // --- LÓGICA DEL CARRITO Y MOTOR DE PROMOCIONES ---
   function agregarAlCarrito(producto) {
     if (producto.cantidad <= 0) return alert('Este producto está agotado en el inventario.')
     
@@ -160,12 +216,81 @@ export default function App() {
     }).filter(Boolean))
   }
 
-  const subtotalCarrito = carrito.reduce((acc, item) => acc + (Number(item.precio_publico) * item.qty), 0)
-  const costoTotalCarrito = carrito.reduce((acc, item) => acc + (Number(item.costo_produccion || 0) * item.qty), 0)
-  const totalCarrito = Math.max(0, subtotalCarrito - Number(descuento || 0))
-  const gananciaCarrito = totalCarrito - costoTotalCarrito
-  const cambioCliente = metodoPago === 'Efectivo' && Number(montoRecibido) >= totalCarrito
-    ? Number(montoRecibido) - totalCarrito
+  // Cálculo automático de Subtotal, Promociones Activas y Total
+  const calculoCarrito = (() => {
+    const subtotalSinPromo = carrito.reduce((acc, item) => acc + (Number(item.precio_publico) * item.qty), 0)
+    const costoTotal = carrito.reduce((acc, item) => acc + (Number(item.costo_produccion || 0) * item.qty), 0)
+    
+    let descuentoPromociones = 0
+    const detallePromosAplicadas = []
+    const itemsYaProcesados = new Set()
+
+    const promosActivas = promociones.filter(p => p.activa)
+
+    // 1. Evaluar promociones por PRODUCTO específico
+    for (const item of carrito) {
+      const promoProd = promosActivas.find(p => p.tipo_aplicacion === 'PRODUCTO' && p.producto_id === item.id)
+      if (promoProd) {
+        const precioNormal = Number(item.precio_publico) * item.qty
+        const { totalConPromo, paquetesAplicados } = calcularMejorPrecioPromo(
+          item.qty,
+          Number(item.precio_publico),
+          promoProd.reglas
+        )
+        const ahorro = Math.max(0, precioNormal - totalConPromo)
+        if (ahorro > 0) {
+          descuentoPromociones += ahorro
+          detallePromosAplicadas.push({
+            nombre: `${promoProd.nombre}: ${paquetesAplicados.join(' + ')}`,
+            ahorro
+          })
+        }
+        itemsYaProcesados.add(item.id)
+      }
+    }
+
+    // 2. Evaluar promociones por CATEGORÍA (permite combinar distintos modelos de la misma categoría y precio)
+    const promosCategoria = promosActivas.filter(p => p.tipo_aplicacion === 'CATEGORIA')
+    for (const promoCat of promosCategoria) {
+      const itemsCat = carrito.filter(i => i.categoria === promoCat.categoria && !itemsYaProcesados.has(i.id))
+      if (itemsCat.length > 0) {
+        const cantTotalCat = itemsCat.reduce((sum, i) => sum + i.qty, 0)
+        const precioNormalCat = itemsCat.reduce((sum, i) => sum + (Number(i.precio_publico) * i.qty), 0)
+        const precioPromedioUnitario = precioNormalCat / cantTotalCat
+
+        const { totalConPromo, paquetesAplicados } = calcularMejorPrecioPromo(
+          cantTotalCat,
+          precioPromedioUnitario,
+          promoCat.reglas
+        )
+        const ahorro = Math.max(0, precioNormalCat - totalConPromo)
+        if (ahorro > 0) {
+          descuentoPromociones += ahorro
+          detallePromosAplicadas.push({
+            nombre: `${promoCat.nombre} (${promoCat.categoria}): ${paquetesAplicados.join(' + ')}`,
+            ahorro
+          })
+        }
+        itemsCat.forEach(i => itemsYaProcesados.add(i.id))
+      }
+    }
+
+    const descuentoTotal = descuentoPromociones + Number(descuentoManual || 0)
+    const totalFinal = Math.max(0, subtotalSinPromo - descuentoTotal)
+    const gananciaNeta = totalFinal - costoTotal
+
+    return {
+      subtotalSinPromo,
+      descuentoPromociones,
+      detallePromosAplicadas,
+      descuentoTotal,
+      totalFinal,
+      gananciaNeta
+    }
+  })()
+
+  const cambioCliente = metodoPago === 'Efectivo' && Number(montoRecibido) >= calculoCarrito.totalFinal
+    ? Number(montoRecibido) - calculoCarrito.totalFinal
     : 0
 
   async function cobrarVenta() {
@@ -177,6 +302,8 @@ export default function App() {
         id: item.id,
         codigo: item.codigo,
         nombre_producto: item.nombre_producto,
+        categoria: item.categoria,
+        tematica: item.tematica || '',
         precio_unitario: Number(item.precio_publico),
         costo_unitario: Number(item.costo_produccion || 0),
         qty: item.qty,
@@ -187,10 +314,10 @@ export default function App() {
         .from('ventas')
         .insert([{
           items: itemsVendidos,
-          subtotal: subtotalCarrito,
-          descuento: Number(descuento || 0),
-          total: totalCarrito,
-          ganancia_neta: gananciaCarrito,
+          subtotal: calculoCarrito.subtotalSinPromo,
+          descuento: calculoCarrito.descuentoTotal,
+          total: calculoCarrito.totalFinal,
+          ganancia_neta: calculoCarrito.gananciaNeta,
           metodo_pago: metodoPago
         }])
         .select()
@@ -206,28 +333,28 @@ export default function App() {
           .eq('id', item.id)
       }
 
-      // Guardamos datos de efectivo para mostrarlos en el recibo recién emitido
-      const ventaConCambio = {
+      const ventaConDetalles = {
         ...nuevaVenta,
+        promosAplicadas: calculoCarrito.detallePromosAplicadas,
         recibido: metodoPago === 'Efectivo' && Number(montoRecibido) > 0 ? Number(montoRecibido) : null,
         cambio: cambioCliente
       }
 
       setCarrito([])
-      setDescuento(0)
+      setDescuentoManual(0)
       setMontoRecibido('')
       setMetodoPago('Efectivo')
       await recargarDatos()
-      setTicketSeleccionado(ventaConCambio)
+      setTicketSeleccionado(ventaConDetalles)
     } catch (error) {
-      alert('Error al registrar la venta. Asegúrate de haber creado la tabla "ventas" en el SQL Editor de Supabase.')
+      alert('Error al registrar la venta: ' + error.message)
       console.error(error)
     } finally {
       setProcesandoVenta(false)
     }
   }
 
-  // --- ANULAR TICKET Y DEVOLVER STOCK AL INVENTARIO ---
+  // --- ANULAR TICKET Y DEVOLVER STOCK ---
   async function anularTicket(ticket) {
     const confirmar = window.confirm(
       `¿Seguro que deseas ANULAR el Ticket #${ticket.folio || ticket.id.slice(0, 5)} por $${ticket.total}?\n\nLas piezas vendidas se sumarán de vuelta al inventario.`
@@ -235,7 +362,6 @@ export default function App() {
     if (!confirmar) return
 
     try {
-      // 1. Devolver stock a cada producto
       for (const item of (ticket.items || [])) {
         const prodActual = productos.find(p => p.id === item.id)
         if (prodActual) {
@@ -246,7 +372,6 @@ export default function App() {
         }
       }
 
-      // 2. Eliminar la venta de la base de datos
       const { error } = await supabase.from('ventas').delete().eq('id', ticket.id)
       if (error) throw error
 
@@ -258,10 +383,10 @@ export default function App() {
     }
   }
 
-  // --- LÓGICA DE EDICIÓN Y ELIMINACIÓN EN INVENTARIO ---
+  // --- LÓGICA DE INVENTARIO ---
   function iniciarEdicion(prod) {
     setEditandoId(prod.id)
-    setFormEdicion({ ...prod })
+    setFormEdicion({ ...prod, tematica: prod.tematica || '' })
   }
 
   async function guardarEdicion() {
@@ -271,6 +396,7 @@ export default function App() {
         codigo: formEdicion.codigo,
         nombre_producto: formEdicion.nombre_producto,
         categoria: formEdicion.categoria,
+        tematica: formEdicion.categoria === 'PINES' ? (formEdicion.tematica || '').trim().toUpperCase() : '',
         cantidad: Number(formEdicion.cantidad),
         costo_produccion: Number(formEdicion.costo_produccion),
         precio_publico: Number(formEdicion.precio_publico),
@@ -291,11 +417,8 @@ export default function App() {
     if (!confirmar) return
 
     const { error } = await supabase.from('productos').delete().eq('id', prod.id)
-    if (error) {
-      alert('Error al eliminar: ' + error.message)
-    } else {
-      recargarDatos()
-    }
+    if (error) alert('Error al eliminar: ' + error.message)
+    else recargarDatos()
   }
 
   // --- LÓGICA PARA AGREGAR PRODUCTO ---
@@ -309,6 +432,7 @@ export default function App() {
       codigo: nuevoProd.codigo,
       nombre_producto: nuevoProd.nombre_producto,
       categoria: nuevoProd.categoria,
+      tematica: nuevoProd.categoria === 'PINES' ? (nuevoProd.tematica || '').trim().toUpperCase() : '',
       cantidad: Number(nuevoProd.cantidad) || 0,
       costo_produccion: Number(nuevoProd.costo_produccion) || 0,
       precio_publico: Number(nuevoProd.precio_publico) || 0,
@@ -320,7 +444,7 @@ export default function App() {
     } else {
       alert('¡Producto agregado al catálogo!')
       setNuevoProd({
-        codigo: '', nombre_producto: '', categoria: 'CADENAS-COLLARES',
+        codigo: '', nombre_producto: '', categoria: 'CADENAS-COLLARES', tematica: '',
         cantidad: 1, costo_produccion: '', precio_publico: '', imagen_url: ''
       })
       recargarDatos()
@@ -328,16 +452,90 @@ export default function App() {
     }
   }
 
-  // Filtrado de productos
+  // --- LÓGICA DE PROMOCIONES ---
+  function agregarReglaPromo() {
+    setNuevaPromo(prev => ({
+      ...prev,
+      reglas: [...prev.reglas, { cantidad: '', precio_total: '' }]
+    }))
+  }
+
+  function actualizarReglaPromo(index, campo, valor) {
+    setNuevaPromo(prev => ({
+      ...prev,
+      reglas: prev.reglas.map((r, i) => i === index ? { ...r, [campo]: valor } : r)
+    }))
+  }
+
+  function quitarReglaPromo(index) {
+    setNuevaPromo(prev => ({
+      ...prev,
+      reglas: prev.reglas.filter((_, i) => i !== index)
+    }))
+  }
+
+  async function guardarPromocion(e) {
+    e.preventDefault()
+    if (!nuevaPromo.nombre) return alert('Escribe un nombre para la promoción.')
+    if (nuevaPromo.tipo_aplicacion === 'PRODUCTO' && !nuevaPromo.producto_id) {
+      return alert('Selecciona el producto al que aplica la promoción.')
+    }
+
+    const reglasLimpias = nuevaPromo.reglas
+      .filter(r => Number(r.cantidad) > 0 && Number(r.precio_total) > 0)
+      .map(r => ({ cantidad: Number(r.cantidad), precio_total: Number(r.precio_total) }))
+
+    if (reglasLimpias.length === 0) {
+      return alert('Agrega al menos una regla válida (ej. Cantidad: 2, Precio Total: 40).')
+    }
+
+    const { error } = await supabase.from('promociones').insert([{
+      nombre: nuevaPromo.nombre,
+      tipo_aplicacion: nuevaPromo.tipo_aplicacion,
+      producto_id: nuevaPromo.tipo_aplicacion === 'PRODUCTO' ? nuevaPromo.producto_id : null,
+      categoria: nuevaPromo.tipo_aplicacion === 'CATEGORIA' ? nuevaPromo.categoria : null,
+      reglas: reglasLimpias,
+      activa: true
+    }])
+
+    if (error) {
+      alert('Error al guardar promoción (verifica haber corrido el SQL en Supabase): ' + error.message)
+    } else {
+      setNuevaPromo({
+        nombre: '',
+        tipo_aplicacion: 'PRODUCTO',
+        producto_id: '',
+        categoria: 'PINES',
+        reglas: [{ cantidad: 2, precio_total: 40 }, { cantidad: 3, precio_total: 50 }]
+      })
+      recargarDatos()
+    }
+  }
+
+  async function alternarEstadoPromo(promo) {
+    await supabase.from('promociones').update({ activa: !promo.activa }).eq('id', promo.id)
+    recargarDatos()
+  }
+
+  async function eliminarPromo(id) {
+    if (!window.confirm('¿Eliminar esta promoción?')) return
+    await supabase.from('promociones').delete().eq('id', id)
+    recargarDatos()
+  }
+
+  // Filtrado de productos compartido (incluye sub-filtro por temática cuando están en PINES)
   const productosFiltrados = productos.filter(p => {
     const coincideCat = categoriaFiltro === 'TODAS' || p.categoria === categoriaFiltro
+    const coincideTematica = categoriaFiltro !== 'PINES' || tematicaFiltro === 'TODAS' || 
+                             (p.tematica && p.tematica.toUpperCase() === tematicaFiltro)
     const coincideTexto = p.nombre_producto.toLowerCase().includes(busqueda.toLowerCase()) ||
-                          (p.codigo && p.codigo.toLowerCase().includes(busqueda.toLowerCase()))
+                          (p.codigo && p.codigo.toLowerCase().includes(busqueda.toLowerCase())) ||
+                          (p.tematica && p.tematica.toLowerCase().includes(busqueda.toLowerCase()))
     const pasaFiltroStock = vistaActiva === 'ventas' && ocultarAgotados ? p.cantidad > 0 : true
-    return coincideCat && coincideTexto && pasaFiltroStock
+    return coincideCat && coincideTematica && coincideTexto && pasaFiltroStock
   })
 
-  // --- AGRUPACIÓN DE VENTAS POR DÍA PARA LA SECCIÓN CORTES ---
+  // --- AGRUPACIÓN DE VENTAS POR DÍA PARA CORTES ---
   const cortesPorDia = ventas.reduce((acc, venta) => {
     const fechaObj = new Date(venta.created_at)
     const fechaKey = fechaObj.toLocaleDateString('es-MX', {
@@ -373,14 +571,115 @@ export default function App() {
 
   const listaCortes = Object.values(cortesPorDia)
 
+  // --- CÁLCULO DE ANALÍTICAS PARA SURTIR EL NEGOCIO ---
+  const analiticas = (() => {
+    const mapaProductos = {}
+    const mapaCategorias = {}
+
+    // Inicializar con productos actuales
+    productos.forEach(p => {
+      mapaProductos[p.id] = {
+        id: p.id,
+        nombre: p.nombre_producto,
+        categoria: p.categoria,
+        tematica: p.tematica || '',
+        stockActual: Number(p.cantidad || 0),
+        costoUnitario: Number(p.costo_produccion || 0),
+        precioPublico: Number(p.precio_publico || 0),
+        unidadesVendidas: 0,
+        ingresosBrutos: 0,
+        gananciaEstimada: 0
+      }
+    })
+
+    // Recorrer todas las ventas históricas
+    ventas.forEach(v => {
+      ;(v.items || []).forEach(item => {
+        const cant = Number(item.qty || 0)
+        const sub = Number(item.subtotal || 0)
+        const costo = Number(item.costo_unitario || 0) * cant
+        const util = sub - costo
+
+        if (!mapaProductos[item.id]) {
+          mapaProductos[item.id] = {
+            id: item.id,
+            nombre: item.nombre_producto,
+            categoria: item.categoria || 'OTROS',
+            tematica: item.tematica || '',
+            stockActual: 0,
+            costoUnitario: Number(item.costo_unitario || 0),
+            precioPublico: Number(item.precio_unitario || 0),
+            unidadesVendidas: 0,
+            ingresosBrutos: 0,
+            gananciaEstimada: 0
+          }
+        }
+
+        mapaProductos[item.id].unidadesVendidas += cant
+        mapaProductos[item.id].ingresosBrutos += sub
+        mapaProductos[item.id].gananciaEstimada += util
+
+        const catKey = mapaProductos[item.id].categoria || 'SIN CATEGORÍA'
+        if (!mapaCategorias[catKey]) {
+          mapaCategorias[catKey] = { categoria: catKey, unidades: 0, ingresos: 0, ganancia: 0 }
+        }
+        mapaCategorias[catKey].unidades += cant
+        mapaCategorias[catKey].ingresos += sub
+        mapaCategorias[catKey].ganancia += util
+      })
+    })
+
+    const listaProds = Object.values(mapaProductos)
+    const topMasVendidos = [...listaProds]
+      .filter(p => p.unidadesVendidas > 0)
+      .sort((a, b) => b.unidadesVendidas - a.unidadesVendidas)
+      .slice(0, 10)
+
+    // Productos estrella que ya tienen poco o nada de stock (Urgente resurtir)
+    const urgenteResurtir = [...listaProds]
+      .filter(p => p.unidadesVendidas > 0 && p.stockActual <= 1)
+      .sort((a, b) => b.unidadesVendidas - a.unidadesVendidas)
+
+    // Productos con stock acumulado pero 0 ventas (No comprar más por ahora)
+    const huesoSinRotacion = [...listaProds]
+      .filter(p => p.unidadesVendidas === 0 && p.stockActual >= 2)
+      .sort((a, b) => b.stockActual - a.stockActual)
+
+    const resumenCategorias = Object.values(mapaCategorias).sort((a, b) => b.ganancia - a.ganancia)
+
+    const valorInventarioCosto = productos.reduce((sum, p) => sum + (Number(p.costo_produccion || 0) * Math.max(0, Number(p.cantidad || 0))), 0)
+    const valorInventarioVenta = productos.reduce((sum, p) => sum + (Number(p.precio_publico || 0) * Math.max(0, Number(p.cantidad || 0))), 0)
+
+    return {
+      topMasVendidos,
+      urgenteResurtir,
+      huesoSinRotacion,
+      resumenCategorias,
+      valorInventarioCosto,
+      valorInventarioVenta
+    }
+  })()
+
+  // Función auxiliar para saber si un producto tiene promo activa
+  function obtenerEtiquetaPromo(prod) {
+    const promo = promociones.find(
+      pr => pr.activa && (
+        (pr.tipo_aplicacion === 'PRODUCTO' && pr.producto_id === prod.id) ||
+        (pr.tipo_aplicacion === 'CATEGORIA' && pr.categoria === prod.categoria)
+      )
+    )
+    if (!promo || !promo.reglas || promo.reglas.length === 0) return null
+    return promo.reglas.map(r => `${r.cantidad}x$${r.precio_total}`).join(' • ')
+  }
+
   return (
     <div className="flex h-screen overflow-hidden bg-destellos-pink">
       
       {/* SIDEBAR DE NAVEGACIÓN */}
       <aside className="w-20 md:w-56 bg-white border-r border-pink-100 flex flex-col justify-between shadow-sm z-10">
-        <div>
+        <div className="overflow-y-auto">
           <div className="p-4 flex items-center justify-center md:justify-start gap-2 border-b border-pink-100">
-            <div className="w-10 h-10 rounded-full bg-destellos-lilac flex items-center justify-center text-white font-bold shadow-inner">
+            <div className="w-10 h-10 rounded-full bg-destellos-lilac flex items-center justify-center text-white font-bold shadow-inner shrink-0">
               <Sparkles size={20} />
             </div>
             <div className="hidden md:block">
@@ -389,66 +688,90 @@ export default function App() {
             </div>
           </div>
 
-          <nav className="p-2 space-y-1.5 mt-3">
+          <nav className="p-2 space-y-1 mt-2">
             <button
               onClick={() => setVistaActiva('ventas')}
-              className={`w-full flex items-center justify-center md:justify-start gap-3 p-3 rounded-xl font-medium transition-all cursor-pointer ${
+              className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                 vistaActiva === 'ventas' 
                   ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                   : 'text-gray-600 hover:bg-pink-50'
               }`}
             >
-              <ShoppingBag size={20} />
+              <ShoppingBag size={19} />
               <span className="hidden md:inline text-sm">Ventas (POS)</span>
             </button>
 
             <button
               onClick={() => setVistaActiva('inventario')}
-              className={`w-full flex items-center justify-center md:justify-start gap-3 p-3 rounded-xl font-medium transition-all cursor-pointer ${
+              className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                 vistaActiva === 'inventario' 
                   ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                   : 'text-gray-600 hover:bg-pink-50'
               }`}
             >
-              <Package size={20} />
+              <Package size={19} />
               <span className="hidden md:inline text-sm">Inventario</span>
             </button>
 
             <button
               onClick={() => setVistaActiva('agregar')}
-              className={`w-full flex items-center justify-center md:justify-start gap-3 p-3 rounded-xl font-medium transition-all cursor-pointer ${
+              className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                 vistaActiva === 'agregar' 
                   ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                   : 'text-gray-600 hover:bg-pink-50'
               }`}
             >
-              <PlusCircle size={20} />
+              <PlusCircle size={19} />
               <span className="hidden md:inline text-sm">Agregar Prod.</span>
             </button>
 
-            <div className="pt-2 my-2 border-t border-pink-100">
+            <button
+              onClick={() => setVistaActiva('promociones')}
+              className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                vistaActiva === 'promociones' 
+                  ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                  : 'text-gray-600 hover:bg-pink-50'
+              }`}
+            >
+              <Tag size={19} />
+              <span className="hidden md:inline text-sm">Promociones</span>
+            </button>
+
+            <div className="pt-2 my-2 border-t border-pink-100 space-y-1">
               <button
                 onClick={() => setVistaActiva('tickets')}
-                className={`w-full flex items-center justify-center md:justify-start gap-3 p-3 rounded-xl font-medium transition-all cursor-pointer ${
+                className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                   vistaActiva === 'tickets' 
                     ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                     : 'text-gray-600 hover:bg-pink-50'
                 }`}
               >
-                <Receipt size={20} />
+                <Receipt size={19} />
                 <span className="hidden md:inline text-sm">Tickets</span>
               </button>
 
               <button
                 onClick={() => setVistaActiva('cortes')}
-                className={`w-full flex items-center justify-center md:justify-start gap-3 p-3 rounded-xl font-medium transition-all cursor-pointer mt-1.5 ${
+                className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                   vistaActiva === 'cortes' 
                     ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                     : 'text-gray-600 hover:bg-pink-50'
                 }`}
               >
-                <BarChart3 size={20} />
+                <BarChart3 size={19} />
                 <span className="hidden md:inline text-sm">Cortes de Caja</span>
+              </button>
+
+              <button
+                onClick={() => setVistaActiva('analiticas')}
+                className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                  vistaActiva === 'analiticas' 
+                    ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                    : 'text-gray-600 hover:bg-pink-50'
+                }`}
+              >
+                <TrendingUp size={19} />
+                <span className="hidden md:inline text-sm">Analíticas / Surtir</span>
               </button>
             </div>
           </nav>
@@ -498,7 +821,10 @@ export default function App() {
                     <div key={item.id} className="flex items-center justify-between p-2.5 bg-destellos-pink/60 rounded-xl border border-pink-100">
                       <div className="flex-1 pr-2">
                         <p className="font-semibold text-sm text-gray-800 leading-snug">{item.nombre_producto}</p>
-                        <p className="text-xs text-gray-500">${item.precio_publico} c/u</p>
+                        <p className="text-xs text-gray-500">
+                          \${item.precio_publico} c/u
+                          {item.tematica ? ` • ${item.tematica}` : ''}
+                        </p>
                       </div>
                       
                       <div className="flex items-center gap-2">
@@ -519,10 +845,25 @@ export default function App() {
                     </div>
                   ))
                 )}
+
+                {/* Banner de Promociones Aplicadas Automáticamente */}
+                {calculoCarrito.detallePromosAplicadas.length > 0 && (
+                  <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 space-y-1">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800">
+                      <Tag size={13} /> Promociones aplicadas automáticamente:
+                    </div>
+                    {calculoCarrito.detallePromosAplicadas.map((p, idx) => (
+                      <div key={idx} className="flex justify-between text-xs text-emerald-700">
+                        <span>{p.nombre}</span>
+                        <span className="font-bold">-${p.ahorro.toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              {/* Selector de Método de Pago, Calculadora de Cambio y Botón de Cobro */}
-              <div className="p-3.5 border-t border-pink-200 bg-white space-y-2.5">
+              {/* Pie de Cobro */}
+              <div className="p-3.5 border-t border-pink-200 bg-white space-y-2">
                 <div>
                   <span className="block text-[11px] font-bold text-gray-500 mb-1">Método de Pago:</span>
                   <div className="grid grid-cols-3 gap-1.5">
@@ -548,25 +889,31 @@ export default function App() {
                   </div>
                 </div>
 
+                {calculoCarrito.descuentoPromociones > 0 && (
+                  <div className="flex justify-between items-center text-xs text-emerald-700 font-semibold">
+                    <span>Ahorro por Promoción:</span>
+                    <span>-${calculoCarrito.descuentoPromociones.toFixed(2)}</span>
+                  </div>
+                )}
+
                 <div className="flex justify-between items-center text-xs">
-                  <span className="text-gray-500">Descuento ($):</span>
+                  <span className="text-gray-500">Descuento Extra ($):</span>
                   <input 
                     type="number" 
                     min="0"
-                    value={descuento}
-                    onChange={e => setDescuento(e.target.value)}
+                    value={descuentoManual}
+                    onChange={e => setDescuentoManual(e.target.value)}
                     className="w-24 border border-pink-200 rounded-lg px-2 py-1 text-right font-medium"
                   />
                 </div>
 
-                {/* Calculadora de Cambio para pagos en Efectivo */}
                 {metodoPago === 'Efectivo' && carrito.length > 0 && (
                   <div className="p-2.5 rounded-xl bg-pink-50/60 border border-pink-100 space-y-1.5">
                     <div className="flex justify-between items-center text-xs">
                       <span className="text-gray-600 font-medium">Pago con ($):</span>
                       <input
                         type="number"
-                        placeholder={totalCarrito.toString()}
+                        placeholder={calculoCarrito.totalFinal.toString()}
                         value={montoRecibido}
                         onChange={e => setMontoRecibido(e.target.value)}
                         className="w-24 bg-white border border-pink-200 rounded-lg px-2 py-1 text-right font-bold text-gray-800"
@@ -584,7 +931,7 @@ export default function App() {
                         </button>
                       ))}
                     </div>
-                    {Number(montoRecibido) >= totalCarrito && (
+                    {Number(montoRecibido) >= calculoCarrito.totalFinal && (
                       <div className="flex justify-between items-center text-xs pt-1 border-t border-pink-100">
                         <span className="font-bold text-emerald-800">Cambio a devolver:</span>
                         <span className="font-extrabold text-sm text-emerald-700">${cambioCliente.toFixed(2)}</span>
@@ -595,7 +942,7 @@ export default function App() {
 
                 <div className="flex justify-between items-baseline border-t border-pink-100 pt-1.5">
                   <span className="text-sm font-bold text-gray-700">Total a Cobrar:</span>
-                  <span className="text-2xl font-extrabold text-purple-900">${totalCarrito.toFixed(2)}</span>
+                  <span className="text-2xl font-extrabold text-purple-900">${calculoCarrito.totalFinal.toFixed(2)}</span>
                 </div>
 
                 <button
@@ -616,7 +963,7 @@ export default function App() {
                     <Search className="absolute left-3.5 top-3 text-gray-400" size={18} />
                     <input
                       type="text"
-                      placeholder="Buscar por nombre o código (ej. mariposa, C-DO-05)..."
+                      placeholder="Buscar por nombre, código o temática (ej. gatitos, hora de aventura)..."
                       value={busqueda}
                       onChange={e => setBusqueda(e.target.value)}
                       className="w-full pl-10 pr-4 py-2 bg-white border border-pink-200 rounded-xl text-sm shadow-xs focus:outline-none focus:ring-2 focus:ring-purple-200"
@@ -635,11 +982,15 @@ export default function App() {
                   </button>
                 </div>
 
+                {/* Pestañas de Categorías */}
                 <div className="flex gap-2 overflow-x-auto pb-1">
                   {CATEGORIAS.map(cat => (
                     <button
                       key={cat}
-                      onClick={() => setCategoriaFiltro(cat)}
+                      onClick={() => {
+                        setCategoriaFiltro(cat)
+                        setTematicaFiltro('TODAS')
+                      }}
                       className={`px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
                         categoriaFiltro === cat
                           ? 'bg-purple-800 text-white shadow-xs'
@@ -650,12 +1001,47 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+
+                {/* Sub-filtro de Temáticas exclusivo cuando se selecciona PINES */}
+                {categoriaFiltro === 'PINES' && (
+                  <div className="flex items-center gap-1.5 overflow-x-auto py-1 px-2.5 bg-purple-50/70 rounded-xl border border-purple-100">
+                    <span className="text-[11px] font-bold text-purple-800 flex items-center gap-1 mr-1 shrink-0">
+                      <Layers size={13} /> Temática:
+                    </span>
+                    <button
+                      onClick={() => setTematicaFiltro('TODAS')}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                        tematicaFiltro === 'TODAS' ? 'bg-purple-700 text-white' : 'bg-white text-purple-800'
+                      }`}
+                    >
+                      TODAS
+                    </button>
+                    {tematicasPines.length === 0 ? (
+                      <span className="text-[11px] text-gray-400 italic">
+                        (Asigna temáticas a tus pines en Inventario o Agregar Prod.)
+                      </span>
+                    ) : (
+                      tematicasPines.map(tem => (
+                        <button
+                          key={tem}
+                          onClick={() => setTematicaFiltro(tem)}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap cursor-pointer ${
+                            tematicaFiltro === tem ? 'bg-purple-700 text-white' : 'bg-white text-purple-800 hover:bg-purple-100'
+                          }`}
+                        >
+                          {tem}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="flex-1 overflow-y-auto pr-1">
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                   {productosFiltrados.map(prod => {
                     const agotado = prod.cantidad <= 0
+                    const etiquetaPromo = obtenerEtiquetaPromo(prod)
                     return (
                       <div
                         key={prod.id}
@@ -684,9 +1070,23 @@ export default function App() {
                               </button>
                             )}
                           </div>
+
                           <h3 className="font-semibold text-sm text-gray-800 line-clamp-2 my-1">
                             {prod.nombre_producto}
                           </h3>
+
+                          {prod.tematica && (
+                            <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 mb-1">
+                              ✨ {prod.tematica}
+                            </span>
+                          )}
+
+                          {etiquetaPromo && (
+                            <div className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 inline-block mb-1">
+                              🏷️ {etiquetaPromo}
+                            </div>
+                          )}
+
                           {imagenExpandidaId === prod.id && prod.imagen_url && (
                             <img 
                               src={prod.imagen_url} 
@@ -696,7 +1096,7 @@ export default function App() {
                           )}
                         </div>
 
-                        <div className="mt-3 pt-2 border-t border-pink-50 flex items-center justify-between">
+                        <div className="mt-2 pt-2 border-t border-pink-50 flex items-center justify-between">
                           <span className="font-extrabold text-base text-gray-900">
                             ${prod.precio_publico}
                           </span>
@@ -725,24 +1125,37 @@ export default function App() {
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
               <div>
                 <h2 className="text-2xl font-bold text-gray-800">Control de Inventario</h2>
-                <p className="text-xs text-gray-500">Modifica precios, existencias o despliega fotos de apoyo para Jazmín</p>
+                <p className="text-xs text-gray-500">Modifica precios, existencias, temáticas de pines o fotos para Jazmín</p>
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <input
                   type="text"
-                  placeholder="Buscar producto..."
+                  placeholder="Buscar producto o temática..."
                   value={busqueda}
                   onChange={e => setBusqueda(e.target.value)}
                   className="px-3 py-2 bg-white border border-pink-200 rounded-xl text-sm"
                 />
                 <select
                   value={categoriaFiltro}
-                  onChange={e => setCategoriaFiltro(e.target.value)}
+                  onChange={e => {
+                    setCategoriaFiltro(e.target.value)
+                    setTematicaFiltro('TODAS')
+                  }}
                   className="px-3 py-2 bg-white border border-pink-200 rounded-xl text-sm font-medium"
                 >
                   {CATEGORIAS.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
+                {categoriaFiltro === 'PINES' && (
+                  <select
+                    value={tematicaFiltro}
+                    onChange={e => setTematicaFiltro(e.target.value)}
+                    className="px-3 py-2 bg-purple-50 border border-purple-200 text-purple-900 rounded-xl text-sm font-bold"
+                  >
+                    <option value="TODAS">Todas las temáticas</option>
+                    {tematicasPines.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                )}
               </div>
             </div>
 
@@ -752,7 +1165,7 @@ export default function App() {
                   <tr>
                     <th className="p-3">Código</th>
                     <th className="p-3">Producto</th>
-                    <th className="p-3">Categoría</th>
+                    <th className="p-3">Categoría / Temática</th>
                     <th className="p-3 text-center">Stock</th>
                     <th className="p-3 text-right">Costo</th>
                     <th className="p-3 text-right">Precio</th>
@@ -790,19 +1203,38 @@ export default function App() {
                           </td>
                           <td className="p-3 text-xs">
                             {enEdicion ? (
-                              <select
-                                value={formEdicion.categoria}
-                                onChange={e => setFormEdicion({...formEdicion, categoria: e.target.value})}
-                                className="border rounded px-1.5 py-1"
-                              >
-                                {CATEGORIAS.filter(c => c !== 'TODAS').map(c => (
-                                  <option key={c} value={c}>{c}</option>
-                                ))}
-                              </select>
+                              <div className="space-y-1">
+                                <select
+                                  value={formEdicion.categoria}
+                                  onChange={e => setFormEdicion({...formEdicion, categoria: e.target.value})}
+                                  className="border rounded px-1.5 py-1 w-full"
+                                >
+                                  {CATEGORIAS.filter(c => c !== 'TODAS').map(c => (
+                                    <option key={c} value={c}>{c}</option>
+                                  ))}
+                                </select>
+                                {formEdicion.categoria === 'PINES' && (
+                                  <input
+                                    type="text"
+                                    list="lista-tematicas"
+                                    placeholder="Temática (ej. GATITOS)"
+                                    value={formEdicion.tematica || ''}
+                                    onChange={e => setFormEdicion({...formEdicion, tematica: e.target.value})}
+                                    className="border border-purple-300 rounded px-1.5 py-1 w-full text-purple-900 font-semibold"
+                                  />
+                                )}
+                              </div>
                             ) : (
-                              <span className="px-2 py-1 rounded-full bg-purple-50 text-purple-800 font-semibold">
-                                {prod.categoria}
-                              </span>
+                              <div className="flex flex-wrap items-center gap-1">
+                                <span className="px-2 py-0.5 rounded-full bg-purple-50 text-purple-800 font-semibold">
+                                  {prod.categoria}
+                                </span>
+                                {prod.tematica && (
+                                  <span className="px-2 py-0.5 rounded-full bg-pink-100 text-pink-900 font-bold text-[11px]">
+                                    {prod.tematica}
+                                  </span>
+                                )}
+                              </div>
                             )}
                           </td>
                           <td className="p-3 text-center">
@@ -842,7 +1274,7 @@ export default function App() {
                             ) : `$${prod.precio_publico}`}
                           </td>
                           <td className="p-3 text-right font-semibold text-emerald-700">
-                            \${ganancia.toFixed(0)}
+                            ${ganancia.toFixed(0)}
                           </td>
                           <td className="p-3 text-center">
                             <button
@@ -906,7 +1338,6 @@ export default function App() {
                                 <div className="space-y-2 flex-1">
                                   <p className="font-bold text-sm text-gray-800">Imagen de apoyo visual: {prod.nombre_producto}</p>
                                   <div className="flex flex-wrap items-center gap-2">
-                                    {/* Botón 1: Abrir Cámara */}
                                     <label className="px-3 py-1.5 bg-purple-700 hover:bg-purple-800 text-white rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5">
                                       <Camera size={14} />
                                       {subiendoImagen ? 'Subiendo...' : 'Cámara'}
@@ -925,7 +1356,6 @@ export default function App() {
                                       />
                                     </label>
 
-                                    {/* Botón 2: Abrir Galería de Fotos */}
                                     <label className="px-3 py-1.5 bg-destellos-lilac hover:bg-purple-200 text-purple-950 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5">
                                       <Image size={14} />
                                       {subiendoImagen ? 'Subiendo...' : 'Galería'}
@@ -983,7 +1413,7 @@ export default function App() {
                   <label className="block text-xs font-bold text-gray-600 mb-1">Código / ID (Opcional)</label>
                   <input
                     type="text"
-                    placeholder="Ej. C-DO-19"
+                    placeholder="Ej. PIN-01"
                     value={nuevoProd.codigo}
                     onChange={e => setNuevoProd({...nuevoProd, codigo: e.target.value})}
                     className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm"
@@ -1003,12 +1433,37 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Campo especial de Temática cuando Jazmín selecciona PINES */}
+              {nuevoProd.categoria === 'PINES' && (
+                <div className="p-3.5 rounded-xl bg-purple-50/70 border border-purple-200">
+                  <label className="block text-xs font-bold text-purple-900 mb-1">
+                    Temática del Pin (ej. Flores, Gatitos, Hora de Aventura)
+                  </label>
+                  <input
+                    type="text"
+                    list="lista-tematicas"
+                    placeholder="Escribe o selecciona una temática..."
+                    value={nuevoProd.tematica}
+                    onChange={e => setNuevoProd({...nuevoProd, tematica: e.target.value})}
+                    className="w-full px-3 py-2 bg-white border border-purple-200 rounded-xl text-sm font-semibold text-purple-950"
+                  />
+                  <datalist id="lista-tematicas">
+                    <option value="FLORES" />
+                    <option value="GATITOS" />
+                    <option value="HORA DE AVENTURA" />
+                    <option value="ANIME" />
+                    <option value="CARICATURAS" />
+                    {tematicasPines.map(t => <option key={t} value={t} />)}
+                  </datalist>
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-bold text-gray-600 mb-1">Nombre o Descripción del Producto *</label>
                 <input
                   type="text"
                   required
-                  placeholder="Ej. Cadenita mariposa nácar dorada"
+                  placeholder="Ej. Pin BMO Hora de Aventura / Cadenita mariposa"
                   value={nuevoProd.nombre_producto}
                   onChange={e => setNuevoProd({...nuevoProd, nombre_producto: e.target.value})}
                   className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm"
@@ -1027,7 +1482,7 @@ export default function App() {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-gray-600 mb-1">Costo Prod. (\$)</label>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Costo Prod. ($)</label>
                   <input
                     type="number"
                     step="0.01"
@@ -1038,12 +1493,12 @@ export default function App() {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-gray-600 mb-1">Precio Público (\$) *</label>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Precio Público ($) *</label>
                   <input
                     type="number"
                     step="0.01"
                     required
-                    placeholder="130.00"
+                    placeholder="25.00"
                     value={nuevoProd.precio_publico}
                     onChange={e => setNuevoProd({...nuevoProd, precio_publico: e.target.value})}
                     className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm font-bold text-purple-900"
@@ -1054,14 +1509,13 @@ export default function App() {
               <div className="p-3 bg-pink-50/60 rounded-xl flex justify-between items-center text-sm">
                 <span className="text-gray-600 font-medium">Ganancia Estimada por Pieza:</span>
                 <span className="font-extrabold text-emerald-700">
-                  \${(Number(nuevoProd.precio_publico || 0) - Number(nuevoProd.costo_produccion || 0)).toFixed(2)}
+                  ${(Number(nuevoProd.precio_publico || 0) - Number(nuevoProd.costo_produccion || 0)).toFixed(2)}
                 </span>
               </div>
 
               <div className="space-y-2 pt-2 border-t border-pink-100">
                 <label className="block text-xs font-bold text-gray-600">Foto de Apoyo (Opcional)</label>
                 <div className="flex flex-wrap items-center gap-2">
-                  {/* Botón Cámara */}
                   <label className="px-3.5 py-2 bg-purple-700 text-white rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5">
                     <Camera size={15} />
                     {subiendoImagen ? 'Subiendo...' : 'Cámara'}
@@ -1077,7 +1531,6 @@ export default function App() {
                     />
                   </label>
 
-                  {/* Botón Galería */}
                   <label className="px-3.5 py-2 bg-destellos-lilac text-purple-950 rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5">
                     <Image size={15} />
                     {subiendoImagen ? 'Subiendo...' : 'Galería'}
@@ -1115,7 +1568,218 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== MÓDULO 4: TICKETS (RECIBOS INDIVIDUALES) ==================== */}
+        {/* ==================== MÓDULO 4: PROMOCIONES AUTOMÁTICAS ==================== */}
+        {vistaActiva === 'promociones' && (
+          <div className="flex-1 overflow-y-auto p-4 md:p-6">
+            <div className="mb-4">
+              <h2 className="text-2xl font-bold text-gray-800">Promociones Automáticas</h2>
+              <p className="text-xs text-gray-500">
+                Configura ofertas como 2x$40 o 3x$50. El carrito calculará el descuento automáticamente al agregar los artículos.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              {/* Formulario para Nueva Promoción */}
+              <form onSubmit={guardarPromocion} className="lg:col-span-5 bg-white p-5 rounded-2xl border border-pink-100 shadow-xs space-y-4">
+                <h3 className="font-bold text-base text-gray-800 border-b border-pink-100 pb-2">
+                  Crear Nueva Promoción
+                </h3>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Nombre de la Promo *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej. Promo Pines 2x$40 y 3x$50"
+                    value={nuevaPromo.nombre}
+                    onChange={e => setNuevaPromo({...nuevaPromo, nombre: e.target.value})}
+                    className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">¿Dónde aplica?</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setNuevaPromo({...nuevaPromo, tipo_aplicacion: 'PRODUCTO'})}
+                      className={`py-2 px-3 rounded-xl text-xs font-bold border cursor-pointer ${
+                        nuevaPromo.tipo_aplicacion === 'PRODUCTO'
+                          ? 'bg-purple-800 text-white border-purple-800'
+                          : 'bg-white text-gray-600 border-pink-200'
+                      }`}
+                    >
+                      Un Producto Específico
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNuevaPromo({...nuevaPromo, tipo_aplicacion: 'CATEGORIA'})}
+                      className={`py-2 px-3 rounded-xl text-xs font-bold border cursor-pointer ${
+                        nuevaPromo.tipo_aplicacion === 'CATEGORIA'
+                          ? 'bg-purple-800 text-white border-purple-800'
+                          : 'bg-white text-gray-600 border-pink-200'
+                      }`}
+                    >
+                      Toda una Categoría
+                    </button>
+                  </div>
+                </div>
+
+                {nuevaPromo.tipo_aplicacion === 'PRODUCTO' ? (
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Selecciona el Artículo *</label>
+                    <select
+                      value={nuevaPromo.producto_id}
+                      onChange={e => setNuevaPromo({...nuevaPromo, producto_id: e.target.value})}
+                      className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm bg-white"
+                    >
+                      <option value="">-- Elige un producto --</option>
+                      {productos.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.nombre_producto} (Precio normal: ${p.precio_publico})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Selecciona la Categoría *</label>
+                    <select
+                      value={nuevaPromo.categoria}
+                      onChange={e => setNuevaPromo({...nuevaPromo, categoria: e.target.value})}
+                      className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm bg-white font-semibold"
+                    >
+                      {CATEGORIAS.filter(c => c !== 'TODAS').map(c => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                    <p className="text-[11px] text-gray-400 mt-1">
+                      Permite que el cliente combine diferentes modelos de esta misma categoría en la misma promo.
+                    </p>
+                  </div>
+                )}
+
+                <div className="space-y-2 pt-2 border-t border-pink-100">
+                  <div className="flex justify-between items-center">
+                    <label className="text-xs font-bold text-gray-700">Escalas de Precio (Ej. 2 x $40, 3 x $50)</label>
+                    <button
+                      type="button"
+                      onClick={agregarReglaPromo}
+                      className="text-xs font-bold text-purple-700 hover:underline cursor-pointer"
+                    >
+                      + Agregar escala
+                    </button>
+                  </div>
+
+                  {nuevaPromo.reglas.map((regla, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5 flex-1 bg-pink-50/50 p-2 rounded-xl border border-pink-100">
+                        <input
+                          type="number"
+                          min="2"
+                          placeholder="Cant (ej. 2)"
+                          value={regla.cantidad}
+                          onChange={e => actualizarReglaPromo(idx, 'cantidad', e.target.value)}
+                          className="w-20 bg-white border border-pink-200 rounded-lg px-2 py-1 text-center font-bold text-sm"
+                        />
+                        <span className="text-xs font-bold text-gray-500">piezas por $</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="Total (ej. 40)"
+                          value={regla.precio_total}
+                          onChange={e => actualizarReglaPromo(idx, 'precio_total', e.target.value)}
+                          className="flex-1 bg-white border border-pink-200 rounded-lg px-2 py-1 font-bold text-purple-900 text-sm"
+                        />
+                      </div>
+                      {nuevaPromo.reglas.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => quitarReglaPromo(idx)}
+                          className="p-2 text-red-400 hover:text-red-600 cursor-pointer"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full py-3 bg-purple-700 hover:bg-purple-800 text-white font-bold rounded-xl shadow-sm cursor-pointer"
+                >
+                  Guardar Promoción
+                </button>
+              </form>
+
+              {/* Lista de Promociones Creadas */}
+              <div className="lg:col-span-7 space-y-3">
+                <h3 className="font-bold text-base text-gray-800">Promociones Configuradas</h3>
+                {promociones.length === 0 ? (
+                  <div className="bg-white p-8 rounded-2xl border border-pink-100 text-center text-gray-400">
+                    <Tag size={40} className="mx-auto mb-2 opacity-30" />
+                    <p className="text-sm">No hay promociones registradas todavía.</p>
+                  </div>
+                ) : (
+                  promociones.map(promo => {
+                    const prodObj = productos.find(p => p.id === promo.producto_id)
+                    return (
+                      <div
+                        key={promo.id}
+                        className={`bg-white p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                          promo.activa ? 'border-pink-100' : 'border-gray-200 opacity-60'
+                        }`}
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
+                              promo.activa ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-200 text-gray-600'
+                            }`}>
+                              {promo.activa ? 'ACTIVA' : 'PAUSADA'}
+                            </span>
+                            <h4 className="font-bold text-gray-800">{promo.nombre}</h4>
+                          </div>
+
+                          <p className="text-xs text-gray-500">
+                            {promo.tipo_aplicacion === 'PRODUCTO'
+                              ? `Producto: ${prodObj ? `${prodObj.nombre_producto} ($${prodObj.precio_publico} c/u)` : 'Producto eliminado'}`
+                              : `Categoría completa: ${promo.categoria}`}
+                          </p>
+
+                          <div className="flex flex-wrap gap-1.5 pt-1">
+                            {(promo.reglas || []).map((r, i) => (
+                              <span key={i} className="px-2.5 py-1 rounded-lg bg-purple-50 text-purple-900 font-extrabold text-xs border border-purple-200">
+                                {r.cantidad} x ${r.precio_total}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 self-end sm:self-center">
+                          <button
+                            onClick={() => alternarEstadoPromo(promo)}
+                            className="px-3 py-1.5 rounded-xl border border-pink-200 text-xs font-bold text-gray-700 hover:bg-pink-50 cursor-pointer"
+                          >
+                            {promo.activa ? 'Pausar' : 'Activar'}
+                          </button>
+                          <button
+                            onClick={() => eliminarPromo(promo.id)}
+                            className="p-2 text-red-500 hover:bg-red-50 rounded-xl cursor-pointer"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ==================== MÓDULO 5: TICKETS (RECIBOS INDIVIDUALES) ==================== */}
         {vistaActiva === 'tickets' && (
           <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
             <div className="mb-4">
@@ -1145,6 +1809,11 @@ export default function App() {
                           <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-pink-50 text-gray-700 border border-pink-200">
                             {ticket.metodo_pago}
                           </span>
+                          {Number(ticket.descuento) > 0 && (
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
+                              Desc/Promo: -${Number(ticket.descuento).toFixed(0)}
+                            </span>
+                          )}
                           <span className="text-xs text-gray-400">
                             {fecha.toLocaleDateString('es-MX')} • {fecha.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
                           </span>
@@ -1153,7 +1822,7 @@ export default function App() {
                         <div className="text-xs text-gray-600 pt-1">
                           {(ticket.items || []).map((it, idx) => (
                             <span key={idx} className="inline-block mr-3 bg-gray-50 px-2 py-0.5 rounded border border-gray-100 mb-1">
-                              <strong>{it.qty}x</strong> {it.nombre_producto} (\${it.subtotal})
+                              <strong>{it.qty}x</strong> {it.nombre_producto} (${it.subtotal})
                             </span>
                           ))}
                         </div>
@@ -1162,7 +1831,7 @@ export default function App() {
                       <div className="flex items-center justify-between sm:justify-end gap-3 border-t sm:border-t-0 pt-2 sm:pt-0 border-pink-50">
                         <div className="text-right mr-2">
                           <p className="text-xs text-gray-400">Total Cobrado</p>
-                          <p className="text-xl font-extrabold text-purple-900">\${Number(ticket.total).toFixed(2)}</p>
+                          <p className="text-xl font-extrabold text-purple-900">${Number(ticket.total).toFixed(2)}</p>
                         </div>
 
                         <button
@@ -1189,7 +1858,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== MÓDULO 5: CORTES DE CAJA POR DÍA ==================== */}
+        {/* ==================== MÓDULO 6: CORTES DE CAJA POR DÍA ==================== */}
         {vistaActiva === 'cortes' && (
           <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
             <div className="mb-4">
@@ -1224,27 +1893,27 @@ export default function App() {
                         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 flex-1 max-w-3xl">
                           <div className="p-2.5 rounded-xl bg-emerald-50/70 border border-emerald-100">
                             <span className="text-[11px] text-emerald-800 font-semibold block">Efectivo en Caja</span>
-                            <span className="text-base font-extrabold text-emerald-900">\${corte.efectivo.toFixed(2)}</span>
+                            <span className="text-base font-extrabold text-emerald-900">${corte.efectivo.toFixed(2)}</span>
                           </div>
 
                           <div className="p-2.5 rounded-xl bg-blue-50/70 border border-blue-100">
                             <span className="text-[11px] text-blue-800 font-semibold block">Transferencias</span>
-                            <span className="text-base font-extrabold text-blue-900">\${corte.transferencia.toFixed(2)}</span>
+                            <span className="text-base font-extrabold text-blue-900">${corte.transferencia.toFixed(2)}</span>
                           </div>
 
                           <div className="p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-100">
                             <span className="text-[11px] text-indigo-800 font-semibold block">Tarjeta</span>
-                            <span className="text-base font-extrabold text-indigo-900">\${corte.tarjeta.toFixed(2)}</span>
+                            <span className="text-base font-extrabold text-indigo-900">${corte.tarjeta.toFixed(2)}</span>
                           </div>
 
                           <div className="p-2.5 rounded-xl bg-amber-50/80 border border-amber-200">
                             <span className="text-[11px] text-amber-900 font-semibold block">Ganancia Neta</span>
-                            <span className="text-base font-extrabold text-amber-900">\${corte.gananciaTotal.toFixed(2)}</span>
+                            <span className="text-base font-extrabold text-amber-900">${corte.gananciaTotal.toFixed(2)}</span>
                           </div>
 
                           <div className="p-2.5 rounded-xl bg-purple-900 text-white flex flex-col justify-center">
                             <span className="text-[11px] text-purple-200 font-semibold block">Venta Total Día</span>
-                            <span className="text-lg font-extrabold">\${corte.totalVendido.toFixed(2)}</span>
+                            <span className="text-lg font-extrabold">${corte.totalVendido.toFixed(2)}</span>
                           </div>
                         </div>
 
@@ -1274,7 +1943,7 @@ export default function App() {
                                     </p>
                                   </div>
                                   <div className="flex items-center gap-2">
-                                    <span className="font-extrabold text-sm text-gray-900">\${Number(t.total).toFixed(2)}</span>
+                                    <span className="font-extrabold text-sm text-gray-900">${Number(t.total).toFixed(2)}</span>
                                     <button
                                       onClick={() => setTicketSeleccionado(t)}
                                       className="p-1.5 bg-pink-50 hover:bg-pink-100 text-purple-800 rounded-lg cursor-pointer"
@@ -1293,6 +1962,171 @@ export default function App() {
                   )
                 })
               )}
+            </div>
+          </div>
+        )}
+
+        {/* ==================== MÓDULO 7: ANALÍTICAS Y GUÍA DE RESURTIDO ==================== */}
+        {vistaActiva === 'analiticas' && (
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+            <div>
+              <h2 className="text-2xl font-bold text-gray-800">Analíticas y Guía de Resurtido</h2>
+              <p className="text-xs text-gray-500">
+                Descubre qué artículos se venden más, qué categorías dejan mayor ganancia y qué conviene comprar o no al surtir.
+              </p>
+            </div>
+
+            {/* Tarjetas de Valor de Inventario */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-white p-4 rounded-2xl border border-pink-100 shadow-2xs">
+                <span className="text-xs text-gray-500 font-semibold">Inversión Actual en Stock (Costo)</span>
+                <p className="text-2xl font-extrabold text-gray-800 mt-1">${analiticas.valorInventarioCosto.toFixed(2)}</p>
+                <span className="text-[11px] text-gray-400">Capital invertido en piezas disponibles</span>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-pink-100 shadow-2xs">
+                <span className="text-xs text-gray-500 font-semibold">Valor de Venta del Inventario</span>
+                <p className="text-2xl font-extrabold text-purple-900 mt-1">${analiticas.valorInventarioVenta.toFixed(2)}</p>
+                <span className="text-[11px] text-gray-400">Ingreso potencial si se vende todo el stock</span>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-pink-100 shadow-2xs">
+                <span className="text-xs text-emerald-700 font-semibold">Ganancia Potencial en Mesa</span>
+                <p className="text-2xl font-extrabold text-emerald-700 mt-1">
+                  ${(analiticas.valorInventarioVenta - analiticas.valorInventarioCosto).toFixed(2)}
+                </p>
+                <span className="text-[11px] text-gray-400">Utilidad neta estimada del stock actual</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* TABLA 1: TOP MÁS VENDIDOS */}
+              <div className="bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs">
+                <h3 className="font-bold text-base text-gray-800 mb-3 flex items-center gap-2">
+                  <TrendingUp size={18} className="text-purple-700" />
+                  Top 10 Artículos Más Vendidos
+                </h3>
+                {analiticas.topMasVendidos.length === 0 ? (
+                  <p className="text-xs text-gray-400 py-6 text-center">Registra ventas para ver el ranking de productos estrella.</p>
+                ) : (
+                  <div className="space-y-2.5">
+                    {analiticas.topMasVendidos.map((item, idx) => (
+                      <div key={item.id} className="flex items-center justify-between p-2.5 rounded-xl bg-pink-50/40 border border-pink-100 text-xs">
+                        <div className="flex items-center gap-2.5">
+                          <span className="w-6 h-6 rounded-full bg-purple-800 text-white font-bold flex items-center justify-center">
+                            {idx + 1}
+                          </span>
+                          <div>
+                            <p className="font-bold text-gray-800">{item.nombre}</p>
+                            <span className="text-[11px] text-gray-500">
+                              {item.categoria} {item.tematica ? `• ${item.tematica}` : ''} • Stock actual: <strong>{item.stockActual}</strong>
+                            </span>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <span className="font-extrabold text-sm text-purple-900">{item.unidadesVendidas} vendidos</span>
+                          <span className="block text-[11px] text-emerald-700 font-semibold">
+                            Ganancia: ${item.gananciaEstimada.toFixed(0)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* TABLA 2: RENDIMIENTO POR CATEGORÍA */}
+              <div className="bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs">
+                <h3 className="font-bold text-base text-gray-800 mb-3 flex items-center gap-2">
+                  <BarChart3 size={18} className="text-purple-700" />
+                  Rentabilidad por Categoría
+                </h3>
+                {analiticas.resumenCategorias.length === 0 ? (
+                  <p className="text-xs text-gray-400 py-6 text-center">Sin datos de categorías vendidas aún.</p>
+                ) : (
+                  <div className="space-y-2.5">
+                    {analiticas.resumenCategorias.map(cat => (
+                      <div key={cat.categoria} className="p-3 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-between text-xs">
+                        <div>
+                          <span className="font-extrabold text-gray-800 text-sm">{cat.categoria}</span>
+                          <span className="block text-gray-500">{cat.unidades} piezas vendidas en total</span>
+                        </div>
+                        <div className="text-right">
+                          <span className="font-bold text-gray-700 block">Ventas: ${cat.ingresos.toFixed(2)}</span>
+                          <span className="font-extrabold text-emerald-700 text-sm">Utilidad: ${cat.ganancia.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* GUÍA DE COMPRA: QUÉ SURTIR Y QUÉ NO COMPRAR */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* URGENTE RESURTIR */}
+              <div className="bg-white p-5 rounded-2xl border border-emerald-200 shadow-2xs">
+                <h3 className="font-bold text-base text-emerald-900 mb-1 flex items-center gap-2">
+                  ✅ ¡Sí Comprar! (Urgente Resurtir)
+                </h3>
+                <p className="text-xs text-gray-500 mb-3">
+                  Productos con ventas comprobadas que ya están agotados o con solo 1 pieza disponible.
+                </p>
+                {analiticas.urgenteResurtir.length === 0 ? (
+                  <p className="text-xs text-gray-400 py-4 text-center">Todo tu stock estrella está bien abastecido.</p>
+                ) : (
+                  <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                    {analiticas.urgenteResurtir.map(p => (
+                      <div key={p.id} className="p-2.5 rounded-xl bg-emerald-50/60 border border-emerald-100 flex justify-between items-center text-xs">
+                        <div>
+                          <p className="font-bold text-gray-800">{p.nombre}</p>
+                          <span className="text-[11px] text-gray-500">
+                            {p.categoria} • Costo reposición: ${p.costoUnitario}
+                          </span>
+                        </div>
+                        <div className="text-right">
+                          <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold text-[10px]">
+                            Quedan: {p.stockActual}
+                          </span>
+                          <span className="block font-bold text-emerald-800 mt-0.5">
+                            {p.unidadesVendidas} vendidos
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* CAPITAL ESTANCADO (NO COMPRAR MÁS POR AHORA) */}
+              <div className="bg-white p-5 rounded-2xl border border-amber-200 shadow-2xs">
+                <h3 className="font-bold text-base text-amber-900 mb-1 flex items-center gap-2">
+                  <AlertTriangle size={18} className="text-amber-600" />
+                  No Surtir Todavía (Baja Rotación)
+                </h3>
+                <p className="text-xs text-gray-500 mb-3">
+                  Artículos con 2 o más piezas acumuladas y 0 ventas registradas (sugerencia: ponlos en Promoción).
+                </p>
+                {analiticas.huesoSinRotacion.length === 0 ? (
+                  <p className="text-xs text-gray-400 py-4 text-center">No tienes mercancía estancada.</p>
+                ) : (
+                  <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                    {analiticas.huesoSinRotacion.slice(0, 15).map(p => (
+                      <div key={p.id} className="p-2.5 rounded-xl bg-amber-50/50 border border-amber-100 flex justify-between items-center text-xs">
+                        <div>
+                          <p className="font-bold text-gray-800">{p.nombre}</p>
+                          <span className="text-[11px] text-gray-500">{p.categoria} • Precio: ${p.precioPublico}</span>
+                        </div>
+                        <div className="text-right">
+                          <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 font-bold">
+                            {p.stockActual} en stock sin vender
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -1323,9 +2157,9 @@ export default function App() {
                     <div className="pr-2">
                       <span className="font-bold text-gray-800">{item.qty}x </span>
                       <span className="text-gray-700">{item.nombre_producto}</span>
-                      <span className="block text-[11px] text-gray-400">\${item.precio_unitario} c/u</span>
+                      <span className="block text-[11px] text-gray-400">${item.precio_unitario} c/u</span>
                     </div>
-                    <span className="font-semibold text-gray-900">\${Number(item.subtotal).toFixed(2)}</span>
+                    <span className="font-semibold text-gray-900">${Number(item.subtotal).toFixed(2)}</span>
                   </div>
                 ))}
               </div>
@@ -1333,17 +2167,17 @@ export default function App() {
               <div className="border-t border-dashed border-gray-200 pt-3 space-y-1 text-sm">
                 <div className="flex justify-between text-gray-500">
                   <span>Subtotal:</span>
-                  <span>\${Number(ticketSeleccionado.subtotal).toFixed(2)}</span>
+                  <span>${Number(ticketSeleccionado.subtotal).toFixed(2)}</span>
                 </div>
                 {Number(ticketSeleccionado.descuento) > 0 && (
-                  <div className="flex justify-between text-red-500">
-                    <span>Descuento:</span>
-                    <span>-\${Number(ticketSeleccionado.descuento).toFixed(2)}</span>
+                  <div className="flex justify-between text-emerald-700 font-semibold">
+                    <span>Ahorro / Descuento:</span>
+                    <span>-${Number(ticketSeleccionado.descuento).toFixed(2)}</span>
                   </div>
                 )}
                 <div className="flex justify-between text-base font-extrabold text-purple-950 pt-1">
                   <span>TOTAL:</span>
-                  <span>\${Number(ticketSeleccionado.total).toFixed(2)}</span>
+                  <span>${Number(ticketSeleccionado.total).toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-xs text-gray-500 pt-1">
                   <span>Método de pago:</span>
@@ -1353,11 +2187,11 @@ export default function App() {
                   <>
                     <div className="flex justify-between text-xs text-gray-500">
                       <span>Efectivo recibido:</span>
-                      <span>\${Number(ticketSeleccionado.recibido).toFixed(2)}</span>
+                      <span>${Number(ticketSeleccionado.recibido).toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between text-xs font-bold text-emerald-700">
                       <span>Cambio entregado:</span>
-                      <span>\${Number(ticketSeleccionado.cambio || 0).toFixed(2)}</span>
+                      <span>${Number(ticketSeleccionado.cambio || 0).toFixed(2)}</span>
                     </div>
                   </>
                 )}
