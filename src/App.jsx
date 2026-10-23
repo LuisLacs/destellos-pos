@@ -4,7 +4,7 @@ import {
   ShoppingBag, Package, PlusCircle, Search, Trash2, 
   Eye, EyeOff, Edit2, Check, X, Camera, Image, Sparkles, RefreshCw,
   Receipt, BarChart3, Banknote, CreditCard, Smartphone, Printer, ChevronDown, ChevronUp,
-  Tag, TrendingUp, AlertTriangle, Layers
+  Tag, TrendingUp, AlertTriangle, Layers, Calendar, ClipboardList
 } from 'lucide-react'
 
 const CATEGORIAS = ['TODAS', 'CADENAS-COLLARES', 'ARETES', 'PULSERAS', 'ANILLOS', 'LLAVEROS', 'PINES']
@@ -14,7 +14,6 @@ const METODOS_PAGO = [
   { id: 'Tarjeta', label: 'Tarjeta', icon: CreditCard }
 ]
 
-// Función auxiliar fuera del componente para comprimir y subir fotos a Supabase Storage
 async function subirImagenASupabase(file) {
   const bitmap = await createImageBitmap(file)
   const canvas = document.createElement('canvas')
@@ -39,7 +38,6 @@ async function subirImagenASupabase(file) {
   return data.publicUrl
 }
 
-// Algoritmo para calcular paquetes de promoción (ej. 3x\$50 + 2x\$40 + 1x\$25)
 function calcularMejorPrecioPromo(cantidadTotal, precioBase, reglas) {
   const reglasOrdenadas = [...(reglas || [])]
     .filter(r => Number(r.cantidad) > 0 && Number(r.precio_total) > 0)
@@ -56,7 +54,7 @@ function calcularMejorPrecioPromo(cantidadTotal, precioBase, reglas) {
       const numCombos = Math.floor(restante / cantRegla)
       totalConPromo += numCombos * precioRegla
       restante = restante % cantRegla
-      paquetesAplicados.push(`${numCombos > 1 ? `\${numCombos}x ` : ''}(${cantRegla}x$${precioRegla})`)
+      paquetesAplicados.push(`${numCombos > 1 ? `${numCombos}x ` : ''}(${cantRegla}x$${precioRegla})`)
     }
   }
 
@@ -68,11 +66,12 @@ function calcularMejorPrecioPromo(cantidadTotal, precioBase, reglas) {
 }
 
 export default function App() {
-  // 'ventas' | 'inventario' | 'agregar' | 'promociones' | 'tickets' | 'cortes' | 'analiticas'
+  // 'ventas' | 'inventario' | 'agregar' | 'promociones' | 'pedidos' | 'calendario' | 'tickets' | 'cortes' | 'analiticas'
   const [vistaActiva, setVistaActiva] = useState('ventas')
   const [productos, setProductos] = useState([])
   const [ventas, setVentas] = useState([])
   const [promociones, setPromociones] = useState([])
+  const [pedidos, setPedidos] = useState([])
   const [cargando, setCargando] = useState(true)
   
   // Estados para Ventas (POS) y Filtros
@@ -113,7 +112,7 @@ export default function App() {
   // Estados para Crear Promoción
   const [nuevaPromo, setNuevaPromo] = useState({
     nombre: '',
-    tipo_aplicacion: 'PRODUCTO', // 'PRODUCTO' | 'CATEGORIA'
+    tipo_aplicacion: 'PRODUCTO',
     producto_id: '',
     categoria: 'PINES',
     reglas: [
@@ -122,15 +121,27 @@ export default function App() {
     ]
   })
 
-  // Carga inicial asíncrona limpia
+  // Estados para Nuevo Pedido por Encargo
+  const [nuevoPedido, setNuevoPedido] = useState({
+    cliente: '',
+    telefono: '',
+    descripcion_pedido: '',
+    fecha_entrega: '',
+    costo_produccion: '',
+    precio_acordado: '',
+    anticipo: ''
+  })
+
+  // Carga inicial asíncrona
   useEffect(() => {
     let cancelado = false
 
     async function cargaInicial() {
-      const [resProductos, resVentas, resPromos] = await Promise.all([
+      const [resProductos, resVentas, resPromos, resPedidos] = await Promise.all([
         supabase.from('productos').select('*').order('nombre_producto', { ascending: true }),
         supabase.from('ventas').select('*').order('created_at', { ascending: false }),
-        supabase.from('promociones').select('*').order('created_at', { ascending: false })
+        supabase.from('promociones').select('*').order('created_at', { ascending: false }),
+        supabase.from('pedidos').select('*').order('fecha_entrega', { ascending: true })
       ])
 
       if (cancelado) return
@@ -138,6 +149,7 @@ export default function App() {
       if (!resProductos.error) setProductos(resProductos.data || [])
       if (!resVentas.error) setVentas(resVentas.data || [])
       if (!resPromos.error) setPromociones(resPromos.data || [])
+      if (!resPedidos.error) setPedidos(resPedidos.data || [])
       setCargando(false)
     }
 
@@ -149,19 +161,20 @@ export default function App() {
 
   async function recargarDatos() {
     setCargando(true)
-    const [resProductos, resVentas, resPromos] = await Promise.all([
+    const [resProductos, resVentas, resPromos, resPedidos] = await Promise.all([
       supabase.from('productos').select('*').order('nombre_producto', { ascending: true }),
       supabase.from('ventas').select('*').order('created_at', { ascending: false }),
-      supabase.from('promociones').select('*').order('created_at', { ascending: false })
+      supabase.from('promociones').select('*').order('created_at', { ascending: false }),
+      supabase.from('pedidos').select('*').order('fecha_entrega', { ascending: true })
     ])
 
     if (!resProductos.error) setProductos(resProductos.data || [])
     if (!resVentas.error) setVentas(resVentas.data || [])
     if (!resPromos.error) setPromociones(resPromos.data || [])
+    if (!resPedidos.error) setPedidos(resPedidos.data || [])
     setCargando(false)
   }
 
-  // Lista dinámica de temáticas existentes en PINES para autocompletado y filtros
   const tematicasPines = Array.from(
     new Set(
       productos
@@ -170,7 +183,6 @@ export default function App() {
     )
   ).sort()
 
-  // --- LÓGICA DE COMPRESIÓN Y SUBIDA DE IMÁGENES ---
   async function comprimirYSubirImagen(file) {
     if (!file) return null
     setSubiendoImagen(true)
@@ -185,7 +197,6 @@ export default function App() {
     }
   }
 
-  // --- LÓGICA DEL CARRITO Y MOTOR DE PROMOCIONES ---
   function agregarAlCarrito(producto) {
     if (producto.cantidad <= 0) return alert('Este producto está agotado en el inventario.')
     
@@ -216,7 +227,6 @@ export default function App() {
     }).filter(Boolean))
   }
 
-  // Cálculo automático de Subtotal, Promociones Activas y Total
   const calculoCarrito = (() => {
     const subtotalSinPromo = carrito.reduce((acc, item) => acc + (Number(item.precio_publico) * item.qty), 0)
     const costoTotal = carrito.reduce((acc, item) => acc + (Number(item.costo_produccion || 0) * item.qty), 0)
@@ -227,7 +237,6 @@ export default function App() {
 
     const promosActivas = promociones.filter(p => p.activa)
 
-    // 1. Evaluar promociones por PRODUCTO específico
     for (const item of carrito) {
       const promoProd = promosActivas.find(p => p.tipo_aplicacion === 'PRODUCTO' && p.producto_id === item.id)
       if (promoProd) {
@@ -249,7 +258,6 @@ export default function App() {
       }
     }
 
-    // 2. Evaluar promociones por CATEGORÍA (permite combinar distintos modelos de la misma categoría y precio)
     const promosCategoria = promosActivas.filter(p => p.tipo_aplicacion === 'CATEGORIA')
     for (const promoCat of promosCategoria) {
       const itemsCat = carrito.filter(i => i.categoria === promoCat.categoria && !itemsYaProcesados.has(i.id))
@@ -354,7 +362,6 @@ export default function App() {
     }
   }
 
-  // --- ANULAR TICKET Y DEVOLVER STOCK ---
   async function anularTicket(ticket) {
     const confirmar = window.confirm(
       `¿Seguro que deseas ANULAR el Ticket #${ticket.folio || ticket.id.slice(0, 5)} por $${ticket.total}?\n\nLas piezas vendidas se sumarán de vuelta al inventario.`
@@ -383,7 +390,54 @@ export default function App() {
     }
   }
 
-  // --- LÓGICA DE INVENTARIO ---
+  // --- GESTIÓN DE PEDIDOS POR ENCARGO ---
+  async function crearPedido(e) {
+    e.preventDefault()
+    if (!nuevoPedido.cliente || !nuevoPedido.descripcion_pedido || !nuevoPedido.fecha_entrega || !nuevoPedido.precio_acordado) {
+      return alert('Por favor llena los campos obligatorios del pedido.')
+    }
+
+    const { error } = await supabase.from('pedidos').insert([{
+      cliente: nuevoPedido.cliente,
+      telefono: nuevoPedido.telefono || '',
+      descripcion_pedido: nuevoPedido.descripcion_pedido,
+      fecha_entrega: nuevoPedido.fecha_entrega,
+      costo_produccion: Number(nuevoPedido.costo_produccion) || 0,
+      precio_acordado: Number(nuevoPedido.precio_acordado),
+      anticipo: Number(nuevoPedido.anticipo) || 0,
+      estado: 'PENDIENTE'
+    }])
+
+    if (error) {
+      alert('Error al crear pedido (verifica haber corrido el SQL en Supabase): ' + error.message)
+    } else {
+      alert('¡Pedido por encargo registrado con éxito!')
+      setNuevoPedido({
+        cliente: '', telefono: '', descripcion_pedido: '', fecha_entrega: '',
+        costo_produccion: '', precio_acordado: '', anticipo: ''
+      })
+      recargarDatos()
+      setVistaActiva('calendario')
+    }
+  }
+
+  async function cambiarEstadoPedido(pedido, nuevoEstado) {
+    const { error } = await supabase
+      .from('pedidos')
+      .update({ estado: nuevoEstado })
+      .eq('id', pedido.id)
+
+    if (error) alert('Error al actualizar estado: ' + error.message)
+    else recargarDatos()
+  }
+
+  async function eliminarPedido(id) {
+    if (!window.confirm('¿Eliminar este pedido permanentemente?')) return
+    const { error } = await supabase.from('pedidos').delete().eq('id', id)
+    if (error) alert('Error al eliminar: ' + error.message)
+    else recargarDatos()
+  }
+
   function iniciarEdicion(prod) {
     setEditandoId(prod.id)
     setFormEdicion({ ...prod, tematica: prod.tematica || '' })
@@ -404,12 +458,8 @@ export default function App() {
       })
       .eq('id', editandoId)
 
-    if (error) {
-      alert('Error al guardar cambios: ' + error.message)
-    } else {
-      setEditandoId(null)
-      recargarDatos()
-    }
+    if (error) alert('Error al guardar cambios: ' + error.message)
+    else { setEditandoId(null); recargarDatos() }
   }
 
   async function eliminarProducto(prod) {
@@ -421,7 +471,6 @@ export default function App() {
     else recargarDatos()
   }
 
-  // --- LÓGICA PARA AGREGAR PRODUCTO ---
   async function crearProducto(e) {
     e.preventDefault()
     if (!nuevoProd.nombre_producto || !nuevoProd.precio_publico) {
@@ -452,7 +501,6 @@ export default function App() {
     }
   }
 
-  // --- LÓGICA DE PROMOCIONES ---
   function agregarReglaPromo() {
     setNuevaPromo(prev => ({
       ...prev,
@@ -499,7 +547,7 @@ export default function App() {
     }])
 
     if (error) {
-      alert('Error al guardar promoción (verifica haber corrido el SQL en Supabase): ' + error.message)
+      alert('Error al guardar promoción: ' + error.message)
     } else {
       setNuevaPromo({
         nombre: '',
@@ -523,7 +571,6 @@ export default function App() {
     recargarDatos()
   }
 
-  // Filtrado de productos compartido (incluye sub-filtro por temática cuando están en PINES)
   const productosFiltrados = productos.filter(p => {
     const coincideCat = categoriaFiltro === 'TODAS' || p.categoria === categoriaFiltro
     const coincideTematica = categoriaFiltro !== 'PINES' || tematicaFiltro === 'TODAS' || 
@@ -535,7 +582,6 @@ export default function App() {
     return coincideCat && coincideTematica && coincideTexto && pasaFiltroStock
   })
 
-  // --- AGRUPACIÓN DE VENTAS POR DÍA PARA CORTES ---
   const cortesPorDia = ventas.reduce((acc, venta) => {
     const fechaObj = new Date(venta.created_at)
     const fechaKey = fechaObj.toLocaleDateString('es-MX', {
@@ -571,12 +617,10 @@ export default function App() {
 
   const listaCortes = Object.values(cortesPorDia)
 
-  // --- CÁLCULO DE ANALÍTICAS PARA SURTIR EL NEGOCIO ---
   const analiticas = (() => {
     const mapaProductos = {}
     const mapaCategorias = {}
 
-    // Inicializar con productos actuales
     productos.forEach(p => {
       mapaProductos[p.id] = {
         id: p.id,
@@ -592,7 +636,6 @@ export default function App() {
       }
     })
 
-    // Recorrer todas las ventas históricas
     ventas.forEach(v => {
       ;(v.items || []).forEach(item => {
         const cant = Number(item.qty || 0)
@@ -635,12 +678,10 @@ export default function App() {
       .sort((a, b) => b.unidadesVendidas - a.unidadesVendidas)
       .slice(0, 10)
 
-    // Productos estrella que ya tienen poco o nada de stock (Urgente resurtir)
     const urgenteResurtir = [...listaProds]
       .filter(p => p.unidadesVendidas > 0 && p.stockActual <= 1)
       .sort((a, b) => b.unidadesVendidas - a.unidadesVendidas)
 
-    // Productos con stock acumulado pero 0 ventas (No comprar más por ahora)
     const huesoSinRotacion = [...listaProds]
       .filter(p => p.unidadesVendidas === 0 && p.stockActual >= 2)
       .sort((a, b) => b.stockActual - a.stockActual)
@@ -660,7 +701,6 @@ export default function App() {
     }
   })()
 
-  // Función auxiliar para saber si un producto tiene promo activa
   function obtenerEtiquetaPromo(prod) {
     const promo = promociones.find(
       pr => pr.activa && (
@@ -739,6 +779,30 @@ export default function App() {
 
             <div className="pt-2 my-2 border-t border-pink-100 space-y-1">
               <button
+                onClick={() => setVistaActiva('calendario')}
+                className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                  vistaActiva === 'calendario' 
+                    ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                    : 'text-gray-600 hover:bg-pink-50'
+                }`}
+              >
+                <Calendar size={19} />
+                <span className="hidden md:inline text-sm">Calendario Entregas</span>
+              </button>
+
+              <button
+                onClick={() => setVistaActiva('pedidos')}
+                className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                  vistaActiva === 'pedidos' 
+                    ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                    : 'text-gray-600 hover:bg-pink-50'
+                }`}
+              >
+                <ClipboardList size={19} />
+                <span className="hidden md:inline text-sm">Registrar Pedido</span>
+              </button>
+
+              <button
                 onClick={() => setVistaActiva('tickets')}
                 className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                   vistaActiva === 'tickets' 
@@ -809,7 +873,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* Lista de items en el carrito */}
               <div className="flex-1 overflow-y-auto p-3 space-y-2">
                 {carrito.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-gray-400 text-center p-4">
@@ -822,7 +885,7 @@ export default function App() {
                       <div className="flex-1 pr-2">
                         <p className="font-semibold text-sm text-gray-800 leading-snug">{item.nombre_producto}</p>
                         <p className="text-xs text-gray-500">
-                          \${item.precio_publico} c/u
+                          ${item.precio_publico} c/u
                           {item.tematica ? ` • ${item.tematica}` : ''}
                         </p>
                       </div>
@@ -846,7 +909,6 @@ export default function App() {
                   ))
                 )}
 
-                {/* Banner de Promociones Aplicadas Automáticamente */}
                 {calculoCarrito.detallePromosAplicadas.length > 0 && (
                   <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 space-y-1">
                     <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800">
@@ -862,7 +924,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* Pie de Cobro */}
               <div className="p-3.5 border-t border-pink-200 bg-white space-y-2">
                 <div>
                   <span className="block text-[11px] font-bold text-gray-500 mb-1">Método de Pago:</span>
@@ -982,7 +1043,6 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* Pestañas de Categorías */}
                 <div className="flex gap-2 overflow-x-auto pb-1">
                   {CATEGORIAS.map(cat => (
                     <button
@@ -1002,7 +1062,6 @@ export default function App() {
                   ))}
                 </div>
 
-                {/* Sub-filtro de Temáticas exclusivo cuando se selecciona PINES */}
                 {categoriaFiltro === 'PINES' && (
                   <div className="flex items-center gap-1.5 overflow-x-auto py-1 px-2.5 bg-purple-50/70 rounded-xl border border-purple-100">
                     <span className="text-[11px] font-bold text-purple-800 flex items-center gap-1 mr-1 shrink-0">
@@ -1017,9 +1076,7 @@ export default function App() {
                       TODAS
                     </button>
                     {tematicasPines.length === 0 ? (
-                      <span className="text-[11px] text-gray-400 italic">
-                        (Asigna temáticas a tus pines en Inventario o Agregar Prod.)
-                      </span>
+                      <span className="text-[11px] text-gray-400 italic">(Sin temáticas asignadas)</span>
                     ) : (
                       tematicasPines.map(tem => (
                         <button
@@ -1433,7 +1490,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Campo especial de Temática cuando Jazmín selecciona PINES */}
               {nuevoProd.categoria === 'PINES' && (
                 <div className="p-3.5 rounded-xl bg-purple-50/70 border border-purple-200">
                   <label className="block text-xs font-bold text-purple-900 mb-1">
@@ -1579,7 +1635,6 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              {/* Formulario para Nueva Promoción */}
               <form onSubmit={guardarPromocion} className="lg:col-span-5 bg-white p-5 rounded-2xl border border-pink-100 shadow-xs space-y-4">
                 <h3 className="font-bold text-base text-gray-800 border-b border-pink-100 pb-2">
                   Crear Nueva Promoción
@@ -1653,9 +1708,6 @@ export default function App() {
                         <option key={c} value={c}>{c}</option>
                       ))}
                     </select>
-                    <p className="text-[11px] text-gray-400 mt-1">
-                      Permite que el cliente combine diferentes modelos de esta misma categoría en la misma promo.
-                    </p>
                   </div>
                 )}
 
@@ -1713,7 +1765,6 @@ export default function App() {
                 </button>
               </form>
 
-              {/* Lista de Promociones Creadas */}
               <div className="lg:col-span-7 space-y-3">
                 <h3 className="font-bold text-base text-gray-800">Promociones Configuradas</h3>
                 {promociones.length === 0 ? (
@@ -1779,7 +1830,227 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== MÓDULO 5: TICKETS (RECIBOS INDIVIDUALES) ==================== */}
+        {/* ==================== MÓDULO 5: CALENDARIO DE ENTREGAS ==================== */}
+        {vistaActiva === 'calendario' && (
+          <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-800">Calendario de Entregas</h2>
+                <p className="text-xs text-gray-500">Programación de pedidos por encargo organizados por fecha</p>
+              </div>
+              <button
+                onClick={() => setVistaActiva('pedidos')}
+                className="px-4 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer"
+              >
+                + Registrar Nuevo Pedido
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+              {pedidos.length === 0 ? (
+                <div className="bg-white rounded-2xl p-10 text-center text-gray-400 border border-pink-100">
+                  <Calendar size={48} className="mx-auto mb-2 opacity-30" />
+                  <p>No hay pedidos por encargo programados en el calendario.</p>
+                </div>
+              ) : (
+                pedidos.map(ped => {
+                  const fechaEntrega = new Date(ped.fecha_entrega + 'T00:00:00')
+                  const fechaLegible = fechaEntrega.toLocaleDateString('es-MX', {
+                    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+                  })
+                  const costo = Number(ped.costo_produccion || 0)
+                  const precio = Number(ped.precio_acordado || 0)
+                  const anticipo = Number(ped.anticipo || 0)
+                  const resta = Math.max(0, precio - anticipo)
+                  const ganancia = precio - costo
+
+                  return (
+                    <div 
+                      key={ped.id} 
+                      className={`bg-white p-4 rounded-2xl border shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                        ped.estado === 'ENTREGADO' 
+                          ? 'border-emerald-200 bg-emerald-50/20 opacity-75' 
+                          : ped.estado === 'CANCELADO' 
+                            ? 'border-red-200 bg-red-50/20 opacity-60 line-through' 
+                            : 'border-pink-100 hover:border-purple-300'
+                      }`}
+                    >
+                      <div className="space-y-1.5 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-extrabold text-xs px-2.5 py-1 rounded-lg bg-purple-100 text-purple-900 flex items-center gap-1">
+                            <Calendar size={13} /> {fechaLegible}
+                          </span>
+                          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                            ped.estado === 'ENTREGADO' ? 'bg-emerald-100 text-emerald-800' :
+                            ped.estado === 'CANCELADO' ? 'bg-red-100 text-red-800' :
+                            'bg-amber-100 text-amber-800'
+                          }`}>
+                            {ped.estado}
+                          </span>
+                          {ped.telefono && (
+                            <span className="text-xs text-gray-500">📞 {ped.telefono}</span>
+                          )}
+                        </div>
+
+                        <div>
+                          <h4 className="font-extrabold text-base text-gray-800">{ped.cliente}</h4>
+                          <p className="text-xs text-gray-600 bg-gray-50 p-2 rounded-xl border border-gray-100 mt-1">
+                            {ped.descripcion_pedido}
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap gap-4 text-xs pt-1 text-gray-600">
+                          <span>Precio: <strong>${precio.toFixed(2)}</strong></span>
+                          <span>Anticipo: <strong className="text-purple-800">${anticipo.toFixed(2)}</strong></span>
+                          <span>Resta cobrar: <strong className="text-red-600">${resta.toFixed(2)}</strong></span>
+                          <span>Ganancia neta: <strong className="text-emerald-700">${ganancia.toFixed(2)}</strong></span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 self-end md:self-center border-t md:border-t-0 pt-2 md:pt-0 border-pink-50">
+                        {ped.estado === 'PENDIENTE' && (
+                          <button
+                            onClick={() => cambiarEstadoPedido(ped, 'ENTREGADO')}
+                            className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold cursor-pointer"
+                          >
+                            Marcar Entregado
+                          </button>
+                        )}
+                        {ped.estado === 'ENTREGADO' && (
+                          <button
+                            onClick={() => cambiarEstadoPedido(ped, 'PENDIENTE')}
+                            className="px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-xl text-xs font-bold cursor-pointer"
+                          >
+                            Reabrir
+                          </button>
+                        )}
+                        <button
+                          onClick={() => eliminarPedido(ped.id)}
+                          className="p-2 text-red-500 hover:bg-red-50 rounded-xl border border-red-100 cursor-pointer"
+                          title="Eliminar pedido"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ==================== MÓDULO 6: REGISTRAR PEDIDO POR ENCARGO ==================== */}
+        {vistaActiva === 'pedidos' && (
+          <div className="flex-1 overflow-y-auto p-6 flex justify-center items-start">
+            <form onSubmit={crearPedido} className="w-full max-w-lg bg-white p-6 rounded-2xl border border-pink-100 shadow-sm space-y-4">
+              <h2 className="text-xl font-bold text-gray-800 border-b border-pink-100 pb-3 flex items-center gap-2">
+                <ClipboardList size={22} className="text-purple-700" />
+                Registrar Pedido por Encargo
+              </h2>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Nombre del Cliente *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej. Sofía Martínez"
+                    value={nuevoPedido.cliente}
+                    onChange={e => setNuevoPedido({...nuevoPedido, cliente: e.target.value})}
+                    className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Teléfono (Opcional)</label>
+                  <input
+                    type="text"
+                    placeholder="Ej. 6871234567"
+                    value={nuevoPedido.telefono}
+                    onChange={e => setNuevoPedido({...nuevoPedido, telefono: e.target.value})}
+                    className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">Descripción del Pedido (Detalles, diseño, colores) *</label>
+                <textarea
+                  required
+                  rows="3"
+                  placeholder="Ej. Pulsera de perlas con dije de mariposa dorada y letra M..."
+                  value={nuevoPedido.descripcion_pedido}
+                  onChange={e => setNuevoPedido({...nuevoPedido, descripcion_pedido: e.target.value})}
+                  className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-purple-900 mb-1">Fecha de Entrega Programada *</label>
+                <input
+                  type="date"
+                  required
+                  value={nuevoPedido.fecha_entrega}
+                  onChange={e => setNuevoPedido({...nuevoPedido, fecha_entrega: e.target.value})}
+                  className="w-full px-3 py-2 bg-purple-50/50 border border-purple-200 rounded-xl text-sm font-bold text-purple-950"
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Costo Prod. ($)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="0.00"
+                    value={nuevoPedido.costo_produccion}
+                    onChange={e => setNuevoPedido({...nuevoPedido, costo_produccion: e.target.value})}
+                    className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Precio Total ($) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    placeholder="150.00"
+                    value={nuevoPedido.precio_acordado}
+                    onChange={e => setNuevoPedido({...nuevoPedido, precio_acordado: e.target.value})}
+                    className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm font-bold text-purple-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Anticipo ($)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="50.00"
+                    value={nuevoPedido.anticipo}
+                    onChange={e => setNuevoPedido({...nuevoPedido, anticipo: e.target.value})}
+                    className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm font-bold text-emerald-700"
+                  />
+                </div>
+              </div>
+
+              <div className="p-3 bg-pink-50/60 rounded-xl flex justify-between items-center text-sm">
+                <span className="text-gray-600 font-medium">Ganancia Neta Estimada:</span>
+                <span className="font-extrabold text-emerald-700">
+                  ${(Number(nuevoPedido.precio_acordado || 0) - Number(nuevoPedido.costo_produccion || 0)).toFixed(2)}
+                </span>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-3 bg-purple-700 hover:bg-purple-800 text-white font-bold rounded-xl shadow-md transition-all cursor-pointer mt-4"
+              >
+                Guardar Pedido en Calendario
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* ==================== MÓDULO 7: TICKETS ==================== */}
         {vistaActiva === 'tickets' && (
           <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
             <div className="mb-4">
@@ -1858,7 +2129,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== MÓDULO 6: CORTES DE CAJA POR DÍA ==================== */}
+        {/* ==================== MÓDULO 8: CORTES DE CAJA POR DÍA ==================== */}
         {vistaActiva === 'cortes' && (
           <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
             <div className="mb-4">
@@ -1966,7 +2237,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== MÓDULO 7: ANALÍTICAS Y GUÍA DE RESURTIDO ==================== */}
+        {/* ==================== MÓDULO 9: ANALÍTICAS Y GUÍA DE RESURTIDO ==================== */}
         {vistaActiva === 'analiticas' && (
           <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
             <div>
@@ -1976,7 +2247,6 @@ export default function App() {
               </p>
             </div>
 
-            {/* Tarjetas de Valor de Inventario */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="bg-white p-4 rounded-2xl border border-pink-100 shadow-2xs">
                 <span className="text-xs text-gray-500 font-semibold">Inversión Actual en Stock (Costo)</span>
@@ -2000,7 +2270,6 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* TABLA 1: TOP MÁS VENDIDOS */}
               <div className="bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs">
                 <h3 className="font-bold text-base text-gray-800 mb-3 flex items-center gap-2">
                   <TrendingUp size={18} className="text-purple-700" />
@@ -2035,7 +2304,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* TABLA 2: RENDIMIENTO POR CATEGORÍA */}
               <div className="bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs">
                 <h3 className="font-bold text-base text-gray-800 mb-3 flex items-center gap-2">
                   <BarChart3 size={18} className="text-purple-700" />
@@ -2062,9 +2330,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* GUÍA DE COMPRA: QUÉ SURTIR Y QUÉ NO COMPRAR */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* URGENTE RESURTIR */}
               <div className="bg-white p-5 rounded-2xl border border-emerald-200 shadow-2xs">
                 <h3 className="font-bold text-base text-emerald-900 mb-1 flex items-center gap-2">
                   ✅ ¡Sí Comprar! (Urgente Resurtir)
@@ -2098,7 +2364,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* CAPITAL ESTANCADO (NO COMPRAR MÁS POR AHORA) */}
               <div className="bg-white p-5 rounded-2xl border border-amber-200 shadow-2xs">
                 <h3 className="font-bold text-base text-amber-900 mb-1 flex items-center gap-2">
                   <AlertTriangle size={18} className="text-amber-600" />
