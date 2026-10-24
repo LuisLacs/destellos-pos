@@ -4,7 +4,7 @@ import {
   ShoppingBag, Package, PlusCircle, Search, Trash2, 
   Eye, EyeOff, Edit2, Check, X, Camera, Image, Sparkles, RefreshCw,
   Receipt, BarChart3, Banknote, CreditCard, Smartphone, Printer, ChevronDown, ChevronUp,
-  Tag, TrendingUp, AlertTriangle, Layers, Calendar, ClipboardList
+  Tag, TrendingUp, AlertTriangle, Layers, Calendar, ClipboardList, Wifi, WifiOff, CloudUpload
 } from 'lucide-react'
 
 const CATEGORIAS = ['TODAS', 'CADENAS-COLLARES', 'ARETES', 'PULSERAS', 'ANILLOS', 'LLAVEROS', 'PINES']
@@ -13,6 +13,32 @@ const METODOS_PAGO = [
   { id: 'Transferencia', label: 'Transferencia', icon: Smartphone },
   { id: 'Tarjeta', label: 'Tarjeta', icon: CreditCard }
 ]
+
+// Claves de almacenamiento interno en la tablet/teléfono
+const STORAGE_KEYS = {
+  PRODUCTOS: 'destellos_cache_productos',
+  VENTAS: 'destellos_cache_ventas',
+  PROMOS: 'destellos_cache_promos',
+  PEDIDOS: 'destellos_cache_pedidos',
+  COLA_SYNC: 'destellos_cola_offline'
+}
+
+function leerCacheLocal(key, valorPorDefecto = []) {
+  try {
+    const guardado = localStorage.getItem(key)
+    return guardado ? JSON.parse(guardado) : valorPorDefecto
+  } catch {
+    return valorPorDefecto
+  }
+}
+
+function guardarCacheLocal(key, data) {
+  try {
+    localStorage.setItem(key, JSON.stringify(data))
+  } catch (e) {
+    console.error('Error guardando en memoria local:', e)
+  }
+}
 
 async function subirImagenASupabase(file) {
   const bitmap = await createImageBitmap(file)
@@ -65,14 +91,76 @@ function calcularMejorPrecioPromo(cantidadTotal, precioBase, reglas) {
   return { totalConPromo, paquetesAplicados }
 }
 
+// Procesador de la cola de operaciones guardadas sin internet
+async function procesarColaOfflineEnServidor(colaActual) {
+  const pendientesRestantes = []
+
+  for (const accion of colaActual) {
+    try {
+      if (accion.tipo === 'REGISTRAR_VENTA') {
+        const { error: errVenta } = await supabase.from('ventas').insert([accion.payload.venta])
+        if (errVenta) throw errVenta
+
+        for (const desc of (accion.payload.descuentosStock || [])) {
+          const { data: prodDb } = await supabase
+            .from('productos')
+            .select('cantidad')
+            .eq('id', desc.id)
+            .single()
+
+          if (prodDb) {
+            const nuevoStock = Math.max(0, Number(prodDb.cantidad) - Number(desc.qtyVendida))
+            await supabase.from('productos').update({ cantidad: nuevoStock }).eq('id', desc.id)
+          }
+        }
+      } else if (accion.tipo === 'EDITAR_PRODUCTO') {
+        const { error } = await supabase.from('productos').update(accion.payload.cambios).eq('id', accion.payload.id)
+        if (error) throw error
+      } else if (accion.tipo === 'CREAR_PRODUCTO') {
+        const { error } = await supabase.from('productos').insert([accion.payload])
+        if (error) throw error
+      } else if (accion.tipo === 'CREAR_PEDIDO') {
+        const { error } = await supabase.from('pedidos').insert([accion.payload])
+        if (error) throw error
+      } else if (accion.tipo === 'COMPLETAR_PEDIDO') {
+        const { error: errPed } = await supabase
+          .from('pedidos')
+          .update({ estado: 'ENTREGADO' })
+          .eq('id', accion.payload.pedidoId)
+        if (errPed) throw errPed
+
+        const { error: errVenta } = await supabase.from('ventas').insert([accion.payload.venta])
+        if (errVenta) throw errVenta
+      } else if (accion.tipo === 'CAMBIAR_ESTADO_PEDIDO') {
+        const { error } = await supabase
+          .from('pedidos')
+          .update({ estado: accion.payload.estado })
+          .eq('id', accion.payload.id)
+        if (error) throw error
+      }
+    } catch (err) {
+      console.error('Operación aún pendiente por sincronizar:', accion.tipo, err)
+      pendientesRestantes.push(accion)
+    }
+  }
+
+  return pendientesRestantes
+}
+
 export default function App() {
   // 'ventas' | 'inventario' | 'agregar' | 'promociones' | 'pedidos' | 'calendario' | 'tickets' | 'cortes' | 'analiticas'
   const [vistaActiva, setVistaActiva] = useState('ventas')
-  const [productos, setProductos] = useState([])
-  const [ventas, setVentas] = useState([])
-  const [promociones, setPromociones] = useState([])
-  const [pedidos, setPedidos] = useState([])
+  
+  // Inicialización inmediata desde caché local para que funcione en el malecón sin internet
+  const [productos, setProductos] = useState(() => leerCacheLocal(STORAGE_KEYS.PRODUCTOS, []))
+  const [ventas, setVentas] = useState(() => leerCacheLocal(STORAGE_KEYS.VENTAS, []))
+  const [promociones, setPromociones] = useState(() => leerCacheLocal(STORAGE_KEYS.PROMOS, []))
+  const [pedidos, setPedidos] = useState(() => leerCacheLocal(STORAGE_KEYS.PEDIDOS, []))
+  const [colaOffline, setColaOffline] = useState(() => leerCacheLocal(STORAGE_KEYS.COLA_SYNC, []))
+  
+  const [esOnline, setEsOnline] = useState(() => navigator.onLine)
   const [cargando, setCargando] = useState(true)
+  const [sincronizando, setSincronizando] = useState(false)
   
   // Estados para Ventas (POS) y Filtros
   const [categoriaFiltro, setCategoriaFiltro] = useState('TODAS')
@@ -84,6 +172,9 @@ export default function App() {
   const [metodoPago, setMetodoPago] = useState('Efectivo')
   const [montoRecibido, setMontoRecibido] = useState('')
   const [procesandoVenta, setProcesandoVenta] = useState(false)
+
+  // Selector de método de pago para cada pedido al entregarlo en el calendario
+  const [metodoPagoPedidos, setMetodoPagoPedidos] = useState({})
 
   // Estado para el Modal de Recibo (Ticket Digital)
   const [ticketSeleccionado, setTicketSeleccionado] = useState(null)
@@ -132,35 +223,108 @@ export default function App() {
     anticipo: ''
   })
 
-  // Carga inicial asíncrona
+  // Función auxiliar para guardar operaciones en la cola local cuando no hay internet
+  function encolarAccionOffline(nuevaAccion) {
+    setColaOffline(prev => {
+      const actualizada = [...prev, { ...nuevaAccion, timestamp: new Date().toISOString() }]
+      guardarCacheLocal(STORAGE_KEYS.COLA_SYNC, actualizada)
+      return actualizada
+    })
+  }
+
+  // Detector de conexión y sincronización automática cuando regresa el internet
   useEffect(() => {
     let cancelado = false
 
-    async function cargaInicial() {
-      const [resProductos, resVentas, resPromos, resPedidos] = await Promise.all([
-        supabase.from('productos').select('*').order('nombre_producto', { ascending: true }),
-        supabase.from('ventas').select('*').order('created_at', { ascending: false }),
-        supabase.from('promociones').select('*').order('created_at', { ascending: false }),
-        supabase.from('pedidos').select('*').order('fecha_entrega', { ascending: true })
-      ])
+    async function sincronizarYDescargar() {
+      if (!navigator.onLine) {
+        if (!cancelado) setCargando(false)
+        return
+      }
 
-      if (cancelado) return
+      // 1. Si hay operaciones guardadas en la tablet sin internet, subirlas primero
+      const colaGuardada = leerCacheLocal(STORAGE_KEYS.COLA_SYNC, [])
+      if (colaGuardada.length > 0) {
+        if (!cancelado) setSincronizando(true)
+        const restantes = await procesarColaOfflineEnServidor(colaGuardada)
+        guardarCacheLocal(STORAGE_KEYS.COLA_SYNC, restantes)
+        if (!cancelado) {
+          setColaOffline(restantes)
+          setSincronizando(false)
+        }
+      }
 
-      if (!resProductos.error) setProductos(resProductos.data || [])
-      if (!resVentas.error) setVentas(resVentas.data || [])
-      if (!resPromos.error) setPromociones(resPromos.data || [])
-      if (!resPedidos.error) setPedidos(resPedidos.data || [])
-      setCargando(false)
+      // 2. Descargar datos frescos de Supabase y actualizar el caché local
+      try {
+        const [resProductos, resVentas, resPromos, resPedidos] = await Promise.all([
+          supabase.from('productos').select('*').order('nombre_producto', { ascending: true }),
+          supabase.from('ventas').select('*').order('created_at', { ascending: false }),
+          supabase.from('promociones').select('*').order('created_at', { ascending: false }),
+          supabase.from('pedidos').select('*').order('fecha_entrega', { ascending: true })
+        ])
+
+        if (cancelado) return
+
+        if (!resProductos.error && resProductos.data) {
+          setProductos(resProductos.data)
+          guardarCacheLocal(STORAGE_KEYS.PRODUCTOS, resProductos.data)
+        }
+        if (!resVentas.error && resVentas.data) {
+          setVentas(resVentas.data)
+          guardarCacheLocal(STORAGE_KEYS.VENTAS, resVentas.data)
+        }
+        if (!resPromos.error && resPromos.data) {
+          setPromociones(resPromos.data)
+          guardarCacheLocal(STORAGE_KEYS.PROMOS, resPromos.data)
+        }
+        if (!resPedidos.error && resPedidos.data) {
+          setPedidos(resPedidos.data)
+          guardarCacheLocal(STORAGE_KEYS.PEDIDOS, resPedidos.data)
+        }
+      } catch (err) {
+        console.warn('Trabajando con datos en caché local:', err)
+      } finally {
+        if (!cancelado) setCargando(false)
+      }
     }
 
-    cargaInicial()
+    sincronizarYDescargar()
+
+    function manejarOnline() {
+      setEsOnline(true)
+      sincronizarYDescargar()
+    }
+
+    function manejarOffline() {
+      setEsOnline(false)
+    }
+
+    window.addEventListener('online', manejarOnline)
+    window.addEventListener('offline', manejarOffline)
+
     return () => {
       cancelado = true
+      window.removeEventListener('online', manejarOnline)
+      window.removeEventListener('offline', manejarOffline)
     }
   }, [])
 
+  // Botón manual de sincronización
   async function recargarDatos() {
+    if (!navigator.onLine) {
+      return alert('Estás en Modo Offline (sin internet). Todas tus ventas y cambios están seguros en la memoria de la tablet y se subirán en cuanto tengas conexión.')
+    }
+
     setCargando(true)
+    const colaGuardada = leerCacheLocal(STORAGE_KEYS.COLA_SYNC, [])
+    if (colaGuardada.length > 0) {
+      setSincronizando(true)
+      const restantes = await procesarColaOfflineEnServidor(colaGuardada)
+      guardarCacheLocal(STORAGE_KEYS.COLA_SYNC, restantes)
+      setColaOffline(restantes)
+      setSincronizando(false)
+    }
+
     const [resProductos, resVentas, resPromos, resPedidos] = await Promise.all([
       supabase.from('productos').select('*').order('nombre_producto', { ascending: true }),
       supabase.from('ventas').select('*').order('created_at', { ascending: false }),
@@ -168,10 +332,22 @@ export default function App() {
       supabase.from('pedidos').select('*').order('fecha_entrega', { ascending: true })
     ])
 
-    if (!resProductos.error) setProductos(resProductos.data || [])
-    if (!resVentas.error) setVentas(resVentas.data || [])
-    if (!resPromos.error) setPromociones(resPromos.data || [])
-    if (!resPedidos.error) setPedidos(resPedidos.data || [])
+    if (!resProductos.error && resProductos.data) {
+      setProductos(resProductos.data)
+      guardarCacheLocal(STORAGE_KEYS.PRODUCTOS, resProductos.data)
+    }
+    if (!resVentas.error && resVentas.data) {
+      setVentas(resVentas.data)
+      guardarCacheLocal(STORAGE_KEYS.VENTAS, resVentas.data)
+    }
+    if (!resPromos.error && resPromos.data) {
+      setPromociones(resPromos.data)
+      guardarCacheLocal(STORAGE_KEYS.PROMOS, resPromos.data)
+    }
+    if (!resPedidos.error && resPedidos.data) {
+      setPedidos(resPedidos.data)
+      guardarCacheLocal(STORAGE_KEYS.PEDIDOS, resPedidos.data)
+    }
     setCargando(false)
   }
 
@@ -185,11 +361,15 @@ export default function App() {
 
   async function comprimirYSubirImagen(file) {
     if (!file) return null
+    if (!navigator.onLine) {
+      alert('Para subir fotografías nuevas a la nube necesitas conexión a internet.')
+      return null
+    }
     setSubiendoImagen(true)
     try {
       return await subirImagenASupabase(file)
     } catch (err) {
-      alert('Error al subir imagen: Verifica que el bucket "productos" exista en Supabase.')
+      alert('Error al subir imagen: Verifica tu conexión o el bucket "productos".')
       console.error(err)
       return null
     } finally {
@@ -301,33 +481,89 @@ export default function App() {
     ? Number(montoRecibido) - calculoCarrito.totalFinal
     : 0
 
+  // --- COBRAR VENTA (SOPORTA MODO ONLINE Y OFFLINE EN EL MALECÓN) ---
   async function cobrarVenta() {
     if (carrito.length === 0) return
     setProcesandoVenta(true)
 
+    const itemsVendidos = carrito.map(item => ({
+      id: item.id,
+      codigo: item.codigo,
+      nombre_producto: item.nombre_producto,
+      categoria: item.categoria,
+      tematica: item.tematica || '',
+      precio_unitario: Number(item.precio_publico),
+      costo_unitario: Number(item.costo_produccion || 0),
+      qty: item.qty,
+      subtotal: Number(item.precio_publico) * item.qty
+    }))
+
+    const payloadVenta = {
+      id: crypto.randomUUID(),
+      items: itemsVendidos,
+      subtotal: calculoCarrito.subtotalSinPromo,
+      descuento: calculoCarrito.descuentoTotal,
+      total: calculoCarrito.totalFinal,
+      ganancia_neta: calculoCarrito.gananciaNeta,
+      metodo_pago: metodoPago,
+      created_at: new Date().toISOString()
+    }
+
+    const descuentosStock = carrito.map(item => ({
+      id: item.id,
+      qtyVendida: item.qty
+    }))
+
+    // Función para guardar la venta localmente si no hay internet o si falla la señal
+    function guardarVentaModoOffline() {
+      const productosActualizados = productos.map(p => {
+        const vendido = carrito.find(c => c.id === p.id)
+        if (vendido) {
+          return { ...p, cantidad: Math.max(0, Number(p.cantidad) - Number(vendido.qty)) }
+        }
+        return p
+      })
+      setProductos(productosActualizados)
+      guardarCacheLocal(STORAGE_KEYS.PRODUCTOS, productosActualizados)
+
+      const ventaLocal = {
+        ...payloadVenta,
+        folio: `OFF-${String(ventas.length + 1).padStart(3, '0')}`,
+        pendienteSync: true
+      }
+
+      const nuevasVentas = [ventaLocal, ...ventas]
+      setVentas(nuevasVentas)
+      guardarCacheLocal(STORAGE_KEYS.VENTAS, nuevasVentas)
+
+      encolarAccionOffline({
+        tipo: 'REGISTRAR_VENTA',
+        payload: { venta: payloadVenta, descuentosStock }
+      })
+
+      const ventaConDetalles = {
+        ...ventaLocal,
+        promosAplicadas: calculoCarrito.detallePromosAplicadas,
+        recibido: metodoPago === 'Efectivo' && Number(montoRecibido) > 0 ? Number(montoRecibido) : null,
+        cambio: cambioCliente
+      }
+
+      setCarrito([])
+      setDescuentoManual(0)
+      setMontoRecibido('')
+      setMetodoPago('Efectivo')
+      setTicketSeleccionado(ventaConDetalles)
+    }
+
     try {
-      const itemsVendidos = carrito.map(item => ({
-        id: item.id,
-        codigo: item.codigo,
-        nombre_producto: item.nombre_producto,
-        categoria: item.categoria,
-        tematica: item.tematica || '',
-        precio_unitario: Number(item.precio_publico),
-        costo_unitario: Number(item.costo_produccion || 0),
-        qty: item.qty,
-        subtotal: Number(item.precio_publico) * item.qty
-      }))
+      if (!navigator.onLine) {
+        guardarVentaModoOffline()
+        return
+      }
 
       const { data: nuevaVenta, error: ventaError } = await supabase
         .from('ventas')
-        .insert([{
-          items: itemsVendidos,
-          subtotal: calculoCarrito.subtotalSinPromo,
-          descuento: calculoCarrito.descuentoTotal,
-          total: calculoCarrito.totalFinal,
-          ganancia_neta: calculoCarrito.gananciaNeta,
-          metodo_pago: metodoPago
-        }])
+        .insert([payloadVenta])
         .select()
         .single()
 
@@ -355,14 +591,18 @@ export default function App() {
       await recargarDatos()
       setTicketSeleccionado(ventaConDetalles)
     } catch (error) {
-      alert('Error al registrar la venta: ' + error.message)
-      console.error(error)
+      console.warn('Señal inestable, guardando venta en memoria interna de la tablet:', error)
+      guardarVentaModoOffline()
     } finally {
       setProcesandoVenta(false)
     }
   }
 
   async function anularTicket(ticket) {
+    if (!navigator.onLine) {
+      return alert('Para anular un ticket necesitas estar conectado a internet.')
+    }
+
     const confirmar = window.confirm(
       `¿Seguro que deseas ANULAR el Ticket #${ticket.folio || ticket.id.slice(0, 5)} por $${ticket.total}?\n\nLas piezas vendidas se sumarán de vuelta al inventario.`
     )
@@ -370,12 +610,14 @@ export default function App() {
 
     try {
       for (const item of (ticket.items || [])) {
-        const prodActual = productos.find(p => p.id === item.id)
-        if (prodActual) {
-          await supabase
-            .from('productos')
-            .update({ cantidad: Number(prodActual.cantidad) + Number(item.qty) })
-            .eq('id', item.id)
+        if (!item.es_pedido) {
+          const prodActual = productos.find(p => p.id === item.id)
+          if (prodActual) {
+            await supabase
+              .from('productos')
+              .update({ cantidad: Number(prodActual.cantidad) + Number(item.qty) })
+              .eq('id', item.id)
+          }
         }
       }
 
@@ -384,20 +626,21 @@ export default function App() {
 
       if (ticketSeleccionado?.id === ticket.id) setTicketSeleccionado(null)
       await recargarDatos()
-      alert('Ticket anulado y stock restaurado correctamente.')
+      alert('Ticket anulado correctamente.')
     } catch (err) {
       alert('Error al anular el ticket: ' + err.message)
     }
   }
 
-  // --- GESTIÓN DE PEDIDOS POR ENCARGO ---
+  // --- GESTIÓN DE PEDIDOS POR ENCARGO Y CONTABILIZACIÓN EN TICKETS/CORTES ---
   async function crearPedido(e) {
     e.preventDefault()
     if (!nuevoPedido.cliente || !nuevoPedido.descripcion_pedido || !nuevoPedido.fecha_entrega || !nuevoPedido.precio_acordado) {
       return alert('Por favor llena los campos obligatorios del pedido.')
     }
 
-    const { error } = await supabase.from('pedidos').insert([{
+    const payloadPedido = {
+      id: crypto.randomUUID(),
       cliente: nuevoPedido.cliente,
       telefono: nuevoPedido.telefono || '',
       descripcion_pedido: nuevoPedido.descripcion_pedido,
@@ -405,11 +648,32 @@ export default function App() {
       costo_produccion: Number(nuevoPedido.costo_produccion) || 0,
       precio_acordado: Number(nuevoPedido.precio_acordado),
       anticipo: Number(nuevoPedido.anticipo) || 0,
-      estado: 'PENDIENTE'
-    }])
+      estado: 'PENDIENTE',
+      created_at: new Date().toISOString()
+    }
+
+    function guardarPedidoOffline() {
+      const actualizados = [...pedidos, payloadPedido].sort((a, b) => a.fecha_entrega.localeCompare(b.fecha_entrega))
+      setPedidos(actualizados)
+      guardarCacheLocal(STORAGE_KEYS.PEDIDOS, actualizados)
+      encolarAccionOffline({ tipo: 'CREAR_PEDIDO', payload: payloadPedido })
+      alert('¡Pedido guardado en memoria interna (Modo Offline)! Se sincronizará al tener internet.')
+      setNuevoPedido({
+        cliente: '', telefono: '', descripcion_pedido: '', fecha_entrega: '',
+        costo_produccion: '', precio_acordado: '', anticipo: ''
+      })
+      setVistaActiva('calendario')
+    }
+
+    if (!navigator.onLine) {
+      guardarPedidoOffline()
+      return
+    }
+
+    const { error } = await supabase.from('pedidos').insert([payloadPedido])
 
     if (error) {
-      alert('Error al crear pedido (verifica haber corrido el SQL en Supabase): ' + error.message)
+      guardarPedidoOffline()
     } else {
       alert('¡Pedido por encargo registrado con éxito!')
       setNuevoPedido({
@@ -421,7 +685,100 @@ export default function App() {
     }
   }
 
+  // Entregar Pedido -> Pasa a ENTREGADO y genera automáticamente su Ticket en Ventas y Finanzas
+  async function completarYContabilizarPedido(pedido) {
+    const metodoElegido = metodoPagoPedidos[pedido.id] || 'Efectivo'
+    const precioTotal = Number(pedido.precio_acordado || 0)
+    const costoTotal = Number(pedido.costo_produccion || 0)
+    const gananciaNeta = precioTotal - costoTotal
+
+    const confirmar = window.confirm(
+      `¿Marcar como ENTREGADO el pedido de ${pedido.cliente} y contabilizar $${precioTotal.toFixed(2)} (${metodoElegido}) en Tickets y Corte de Caja?`
+    )
+    if (!confirmar) return
+
+    const itemPedido = [{
+      id: pedido.id,
+      codigo: 'PEDIDO',
+      nombre_producto: `Pedido: ${pedido.descripcion_pedido} (${pedido.cliente})`,
+      categoria: 'PEDIDOS ESPECIALES',
+      tematica: '',
+      precio_unitario: precioTotal,
+      costo_unitario: costoTotal,
+      qty: 1,
+      subtotal: precioTotal,
+      es_pedido: true
+    }]
+
+    const payloadVenta = {
+      id: crypto.randomUUID(),
+      items: itemPedido,
+      subtotal: precioTotal,
+      descuento: 0,
+      total: precioTotal,
+      ganancia_neta: gananciaNeta,
+      metodo_pago: metodoElegido,
+      created_at: new Date().toISOString()
+    }
+
+    function completarEnModoOffline() {
+      const pedidosActualizados = pedidos.map(p => p.id === pedido.id ? { ...p, estado: 'ENTREGADO' } : p)
+      setPedidos(pedidosActualizados)
+      guardarCacheLocal(STORAGE_KEYS.PEDIDOS, pedidosActualizados)
+
+      const ventaLocal = {
+        ...payloadVenta,
+        folio: `PED-${String(ventas.length + 1).padStart(3, '0')}`,
+        pendienteSync: true
+      }
+      const nuevasVentas = [ventaLocal, ...ventas]
+      setVentas(nuevasVentas)
+      guardarCacheLocal(STORAGE_KEYS.VENTAS, nuevasVentas)
+
+      encolarAccionOffline({
+        tipo: 'COMPLETAR_PEDIDO',
+        payload: { pedidoId: pedido.id, venta: payloadVenta }
+      })
+
+      setTicketSeleccionado(ventaLocal)
+    }
+
+    if (!navigator.onLine) {
+      completarEnModoOffline()
+      return
+    }
+
+    try {
+      const { error: errPed } = await supabase
+        .from('pedidos')
+        .update({ estado: 'ENTREGADO' })
+        .eq('id', pedido.id)
+      if (errPed) throw errPed
+
+      const { data: nuevaVenta, error: errVenta } = await supabase
+        .from('ventas')
+        .insert([payloadVenta])
+        .select()
+        .single()
+      if (errVenta) throw errVenta
+
+      await recargarDatos()
+      setTicketSeleccionado(nuevaVenta)
+    } catch (err) {
+      console.warn('Fallo de red al completar pedido, guardando en cola offline:', err)
+      completarEnModoOffline()
+    }
+  }
+
   async function cambiarEstadoPedido(pedido, nuevoEstado) {
+    if (!navigator.onLine) {
+      const actualizados = pedidos.map(p => p.id === pedido.id ? { ...p, estado: nuevoEstado } : p)
+      setPedidos(actualizados)
+      guardarCacheLocal(STORAGE_KEYS.PEDIDOS, actualizados)
+      encolarAccionOffline({ tipo: 'CAMBIAR_ESTADO_PEDIDO', payload: { id: pedido.id, estado: nuevoEstado } })
+      return
+    }
+
     const { error } = await supabase
       .from('pedidos')
       .update({ estado: nuevoEstado })
@@ -432,37 +789,59 @@ export default function App() {
   }
 
   async function eliminarPedido(id) {
+    if (!navigator.onLine) return alert('Para eliminar un pedido necesitas conexión a internet.')
     if (!window.confirm('¿Eliminar este pedido permanentemente?')) return
     const { error } = await supabase.from('pedidos').delete().eq('id', id)
     if (error) alert('Error al eliminar: ' + error.message)
     else recargarDatos()
   }
 
+  // --- EDICIÓN Y CREACIÓN DE PRODUCTOS (CON SOPORTE OFFLINE) ---
   function iniciarEdicion(prod) {
     setEditandoId(prod.id)
     setFormEdicion({ ...prod, tematica: prod.tematica || '' })
   }
 
   async function guardarEdicion() {
+    const cambios = {
+      codigo: formEdicion.codigo,
+      nombre_producto: formEdicion.nombre_producto,
+      categoria: formEdicion.categoria,
+      tematica: formEdicion.categoria === 'PINES' ? (formEdicion.tematica || '').trim().toUpperCase() : '',
+      cantidad: Number(formEdicion.cantidad),
+      costo_produccion: Number(formEdicion.costo_produccion),
+      precio_publico: Number(formEdicion.precio_publico),
+      imagen_url: formEdicion.imagen_url
+    }
+
+    function editarEnModoOffline() {
+      const actualizados = productos.map(p => p.id === editandoId ? { ...p, ...cambios } : p)
+      setProductos(actualizados)
+      guardarCacheLocal(STORAGE_KEYS.PRODUCTOS, actualizados)
+      encolarAccionOffline({ tipo: 'EDITAR_PRODUCTO', payload: { id: editandoId, cambios } })
+      setEditandoId(null)
+    }
+
+    if (!navigator.onLine) {
+      editarEnModoOffline()
+      return
+    }
+
     const { error } = await supabase
       .from('productos')
-      .update({
-        codigo: formEdicion.codigo,
-        nombre_producto: formEdicion.nombre_producto,
-        categoria: formEdicion.categoria,
-        tematica: formEdicion.categoria === 'PINES' ? (formEdicion.tematica || '').trim().toUpperCase() : '',
-        cantidad: Number(formEdicion.cantidad),
-        costo_produccion: Number(formEdicion.costo_produccion),
-        precio_publico: Number(formEdicion.precio_publico),
-        imagen_url: formEdicion.imagen_url
-      })
+      .update(cambios)
       .eq('id', editandoId)
 
-    if (error) alert('Error al guardar cambios: ' + error.message)
-    else { setEditandoId(null); recargarDatos() }
+    if (error) {
+      editarEnModoOffline()
+    } else {
+      setEditandoId(null)
+      recargarDatos()
+    }
   }
 
   async function eliminarProducto(prod) {
+    if (!navigator.onLine) return alert('Para eliminar productos permanentemente necesitas conexión a internet.')
     const confirmar = window.confirm(`¿Eliminar "${prod.nombre_producto}" del catálogo permanentemente?`)
     if (!confirmar) return
 
@@ -477,7 +856,8 @@ export default function App() {
       return alert('Por favor completa el nombre y el precio al público.')
     }
 
-    const { error } = await supabase.from('productos').insert([{
+    const payloadProd = {
+      id: crypto.randomUUID(),
       codigo: nuevoProd.codigo,
       nombre_producto: nuevoProd.nombre_producto,
       categoria: nuevoProd.categoria,
@@ -485,11 +865,32 @@ export default function App() {
       cantidad: Number(nuevoProd.cantidad) || 0,
       costo_produccion: Number(nuevoProd.costo_produccion) || 0,
       precio_publico: Number(nuevoProd.precio_publico) || 0,
-      imagen_url: nuevoProd.imagen_url
-    }])
+      imagen_url: nuevoProd.imagen_url,
+      created_at: new Date().toISOString()
+    }
+
+    function crearProdModoOffline() {
+      const actualizados = [...productos, payloadProd].sort((a, b) => a.nombre_producto.localeCompare(b.nombre_producto))
+      setProductos(actualizados)
+      guardarCacheLocal(STORAGE_KEYS.PRODUCTOS, actualizados)
+      encolarAccionOffline({ tipo: 'CREAR_PRODUCTO', payload: payloadProd })
+      alert('¡Producto guardado en la tablet (Modo Offline)! Se subirá a la nube al conectar a internet.')
+      setNuevoProd({
+        codigo: '', nombre_producto: '', categoria: 'CADENAS-COLLARES', tematica: '',
+        cantidad: 1, costo_produccion: '', precio_publico: '', imagen_url: ''
+      })
+      setVistaActiva('inventario')
+    }
+
+    if (!navigator.onLine) {
+      crearProdModoOffline()
+      return
+    }
+
+    const { error } = await supabase.from('productos').insert([payloadProd])
 
     if (error) {
-      alert('Error al crear producto: ' + error.message)
+      crearProdModoOffline()
     } else {
       alert('¡Producto agregado al catálogo!')
       setNuevoProd({
@@ -647,14 +1048,15 @@ export default function App() {
           mapaProductos[item.id] = {
             id: item.id,
             nombre: item.nombre_producto,
-            categoria: item.categoria || 'OTROS',
+            categoria: item.categoria || 'PEDIDOS ESPECIALES',
             tematica: item.tematica || '',
             stockActual: 0,
             costoUnitario: Number(item.costo_unitario || 0),
             precioPublico: Number(item.precio_unitario || 0),
             unidadesVendidas: 0,
             ingresosBrutos: 0,
-            gananciaEstimada: 0
+            gananciaEstimada: 0,
+            esPedido: Boolean(item.es_pedido)
           }
         }
 
@@ -674,16 +1076,16 @@ export default function App() {
 
     const listaProds = Object.values(mapaProductos)
     const topMasVendidos = [...listaProds]
-      .filter(p => p.unidadesVendidas > 0)
+      .filter(p => p.unidadesVendidas > 0 && !p.esPedido)
       .sort((a, b) => b.unidadesVendidas - a.unidadesVendidas)
       .slice(0, 10)
 
     const urgenteResurtir = [...listaProds]
-      .filter(p => p.unidadesVendidas > 0 && p.stockActual <= 1)
+      .filter(p => p.unidadesVendidas > 0 && p.stockActual <= 1 && !p.esPedido)
       .sort((a, b) => b.unidadesVendidas - a.unidadesVendidas)
 
     const huesoSinRotacion = [...listaProds]
-      .filter(p => p.unidadesVendidas === 0 && p.stockActual >= 2)
+      .filter(p => p.unidadesVendidas === 0 && p.stockActual >= 2 && !p.esPedido)
       .sort((a, b) => b.stockActual - a.stockActual)
 
     const resumenCategorias = Object.values(mapaCategorias).sort((a, b) => b.ganancia - a.ganancia)
@@ -841,13 +1243,34 @@ export default function App() {
           </nav>
         </div>
 
-        <div className="p-3 border-t border-pink-100">
+        {/* ESTADO DE CONEXIÓN Y COLA OFFLINE EN EL MALECÓN */}
+        <div className="p-2.5 border-t border-pink-100 space-y-2">
+          <div className={`p-2 rounded-xl text-xs font-bold flex items-center justify-center md:justify-start gap-2 ${
+            esOnline ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-amber-50 text-amber-900 border border-amber-200'
+          }`}>
+            {esOnline ? <Wifi size={15} className="shrink-0" /> : <WifiOff size={15} className="shrink-0" />}
+            <div className="hidden md:block leading-tight">
+              <span>{esOnline ? 'En línea' : 'Modo Offline'}</span>
+              {colaOffline.length > 0 && (
+                <span className="block text-[10px] font-normal">
+                  {colaOffline.length} {colaOffline.length === 1 ? 'cambio pendiente' : 'cambios pendientes'}
+                </span>
+              )}
+            </div>
+          </div>
+
           <button 
             onClick={recargarDatos}
-            className="w-full flex items-center justify-center gap-2 p-2 text-xs text-gray-500 hover:text-destellos-dark hover:bg-pink-50 rounded-lg cursor-pointer"
+            className="w-full flex items-center justify-center gap-2 p-2 text-xs font-semibold text-gray-600 hover:text-destellos-dark hover:bg-pink-50 rounded-lg cursor-pointer"
           >
-            <RefreshCw size={15} className={cargando ? 'animate-spin' : ''} />
-            <span className="hidden md:inline">Sincronizar Datos</span>
+            {colaOffline.length > 0 ? (
+              <CloudUpload size={15} className={sincronizando ? 'animate-bounce text-purple-700' : 'text-purple-700'} />
+            ) : (
+              <RefreshCw size={15} className={cargando || sincronizando ? 'animate-spin' : ''} />
+            )}
+            <span className="hidden md:inline">
+              {sincronizando ? 'Subiendo datos...' : colaOffline.length > 0 ? `Subir Pendientes (${colaOffline.length})` : 'Sincronizar Datos'}
+            </span>
           </button>
         </div>
       </aside>
@@ -1011,7 +1434,7 @@ export default function App() {
                   disabled={carrito.length === 0 || procesandoVenta}
                   className="w-full py-3 rounded-xl bg-purple-700 hover:bg-purple-800 disabled:bg-gray-300 text-white font-bold text-base shadow-md active:scale-[0.99] transition-all cursor-pointer"
                 >
-                  {procesandoVenta ? 'Generando Recibo...' : `Cobrar (${metodoPago})`}
+                  {procesandoVenta ? 'Guardando...' : `Cobrar (${metodoPago})`}
                 </button>
               </div>
             </div>
@@ -1836,7 +2259,9 @@ export default function App() {
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
               <div>
                 <h2 className="text-2xl font-bold text-gray-800">Calendario de Entregas</h2>
-                <p className="text-xs text-gray-500">Programación de pedidos por encargo organizados por fecha</p>
+                <p className="text-xs text-gray-500">
+                  Al marcar un pedido como entregado, se generará su ticket automáticamente y se sumará a las finanzas del día.
+                </p>
               </div>
               <button
                 onClick={() => setVistaActiva('pedidos')}
@@ -1869,7 +2294,7 @@ export default function App() {
                       key={ped.id} 
                       className={`bg-white p-4 rounded-2xl border shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4 ${
                         ped.estado === 'ENTREGADO' 
-                          ? 'border-emerald-200 bg-emerald-50/20 opacity-75' 
+                          ? 'border-emerald-200 bg-emerald-50/20 opacity-80' 
                           : ped.estado === 'CANCELADO' 
                             ? 'border-red-200 bg-red-50/20 opacity-60 line-through' 
                             : 'border-pink-100 hover:border-purple-300'
@@ -1885,7 +2310,7 @@ export default function App() {
                             ped.estado === 'CANCELADO' ? 'bg-red-100 text-red-800' :
                             'bg-amber-100 text-amber-800'
                           }`}>
-                            {ped.estado}
+                            {ped.estado === 'ENTREGADO' ? '✓ ENTREGADO Y CONTABILIZADO' : ped.estado}
                           </span>
                           {ped.telefono && (
                             <span className="text-xs text-gray-500">📞 {ped.telefono}</span>
@@ -1900,21 +2325,34 @@ export default function App() {
                         </div>
 
                         <div className="flex flex-wrap gap-4 text-xs pt-1 text-gray-600">
-                          <span>Precio: <strong>${precio.toFixed(2)}</strong></span>
+                          <span>Precio Total: <strong>${precio.toFixed(2)}</strong></span>
                           <span>Anticipo: <strong className="text-purple-800">${anticipo.toFixed(2)}</strong></span>
-                          <span>Resta cobrar: <strong className="text-red-600">${resta.toFixed(2)}</strong></span>
+                          <span>Resta liquidar: <strong className="text-red-600">${resta.toFixed(2)}</strong></span>
                           <span>Ganancia neta: <strong className="text-emerald-700">${ganancia.toFixed(2)}</strong></span>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 self-end md:self-center border-t md:border-t-0 pt-2 md:pt-0 border-pink-50">
+                      <div className="flex flex-wrap items-center gap-2 self-end md:self-center border-t md:border-t-0 pt-2 md:pt-0 border-pink-50">
                         {ped.estado === 'PENDIENTE' && (
-                          <button
-                            onClick={() => cambiarEstadoPedido(ped, 'ENTREGADO')}
-                            className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold cursor-pointer"
-                          >
-                            Marcar Entregado
-                          </button>
+                          <>
+                            <select
+                              value={metodoPagoPedidos[ped.id] || 'Efectivo'}
+                              onChange={e => setMetodoPagoPedidos({...metodoPagoPedidos, [ped.id]: e.target.value})}
+                              className="px-2.5 py-2 bg-pink-50/70 border border-pink-200 rounded-xl text-xs font-bold text-purple-950"
+                              title="Método de pago con el que liquida"
+                            >
+                              <option value="Efectivo">Efectivo</option>
+                              <option value="Transferencia">Transferencia</option>
+                              <option value="Tarjeta">Tarjeta</option>
+                            </select>
+
+                            <button
+                              onClick={() => completarYContabilizarPedido(ped)}
+                              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold cursor-pointer shadow-2xs"
+                            >
+                              ✓ Entregar y Cobrar
+                            </button>
+                          </>
                         )}
                         {ped.estado === 'ENTREGADO' && (
                           <button
@@ -2055,7 +2493,7 @@ export default function App() {
           <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
             <div className="mb-4">
               <h2 className="text-2xl font-bold text-gray-800">Historial de Tickets</h2>
-              <p className="text-xs text-gray-500">Consulta todos los recibos emitidos o anula una venta si hubo algún error</p>
+              <p className="text-xs text-gray-500">Consulta todos los recibos de piso y pedidos entregados</p>
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-3 pr-1">
@@ -2067,16 +2505,27 @@ export default function App() {
               ) : (
                 ventas.map(ticket => {
                   const fecha = new Date(ticket.created_at)
+                  const esDePedido = (ticket.items || []).some(it => it.es_pedido)
                   return (
                     <div 
                       key={ticket.id} 
                       className="bg-white p-4 rounded-2xl border border-pink-100 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:border-purple-200 transition-all"
                     >
                       <div className="space-y-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="font-extrabold text-sm px-2.5 py-0.5 rounded-lg bg-purple-100 text-purple-900">
                             Ticket #{ticket.folio || ticket.id.slice(0, 5)}
                           </span>
+                          {esDePedido && (
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-purple-800 text-white">
+                              📦 PEDIDO ENTREGADO
+                            </span>
+                          )}
+                          {ticket.pendienteSync && (
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                              ⏳ Guardado en Tablet (Pendiente subir)
+                            </span>
+                          )}
                           <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-pink-50 text-gray-700 border border-pink-200">
                             {ticket.metodo_pago}
                           </span>
@@ -2134,7 +2583,7 @@ export default function App() {
           <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
             <div className="mb-4">
               <h2 className="text-2xl font-bold text-gray-800">Cortes de Caja por Día</h2>
-              <p className="text-xs text-gray-500">Resumen diario de ingresos por método de pago, ganancias y desglose de tickets</p>
+              <p className="text-xs text-gray-500">Resumen diario de ingresos por método de pago (incluye ventas de piso y pedidos entregados)</p>
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-4 pr-1">
@@ -2154,7 +2603,7 @@ export default function App() {
                       >
                         <div>
                           <span className="text-xs font-bold uppercase tracking-wider text-purple-700 bg-purple-50 px-2.5 py-0.5 rounded-full">
-                            {corte.tickets.length} {corte.tickets.length === 1 ? 'ticket vendido' : 'tickets vendidos'}
+                            {corte.tickets.length} {corte.tickets.length === 1 ? 'operación registrada' : 'operaciones registradas'}
                           </span>
                           <h3 className="text-lg font-extrabold text-gray-800 capitalize mt-1">
                             {corte.fechaLegible}
@@ -2307,7 +2756,7 @@ export default function App() {
               <div className="bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs">
                 <h3 className="font-bold text-base text-gray-800 mb-3 flex items-center gap-2">
                   <BarChart3 size={18} className="text-purple-700" />
-                  Rentabilidad por Categoría
+                  Rentabilidad por Categoría (Incluye Pedidos)
                 </h3>
                 {analiticas.resumenCategorias.length === 0 ? (
                   <p className="text-xs text-gray-400 py-6 text-center">Sin datos de categorías vendidas aún.</p>
@@ -2317,7 +2766,7 @@ export default function App() {
                       <div key={cat.categoria} className="p-3 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-between text-xs">
                         <div>
                           <span className="font-extrabold text-gray-800 text-sm">{cat.categoria}</span>
-                          <span className="block text-gray-500">{cat.unidades} piezas vendidas en total</span>
+                          <span className="block text-gray-500">{cat.unidades} piezas / encargos vendidos</span>
                         </div>
                         <div className="text-right">
                           <span className="font-bold text-gray-700 block">Ventas: ${cat.ingresos.toFixed(2)}</span>
