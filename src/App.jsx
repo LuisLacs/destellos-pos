@@ -42,6 +42,15 @@ function guardarCacheLocal(key, data) {
   }
 }
 
+// Formateador para mostrar signos negativos claramente (ej. -$3.00 o $247.00)
+function formatearMoneda(valor) {
+  const num = Number(valor || 0)
+  if (num < 0) {
+    return `-$${Math.abs(num).toFixed(2)}`
+  }
+  return `$${num.toFixed(2)}`
+}
+
 async function subirImagenASupabase(file) {
   const bitmap = await createImageBitmap(file)
   const canvas = document.createElement('canvas')
@@ -141,6 +150,12 @@ async function procesarColaOfflineEnServidor(colaActual) {
         if (error) throw error
       } else if (accion.tipo === 'CREAR_FONDO') {
         const { error } = await supabase.from('finanzas_fondos').insert([accion.payload])
+        if (error) throw error
+      } else if (accion.tipo === 'AJUSTAR_SALDO_FONDO') {
+        const { error } = await supabase
+          .from('finanzas_fondos')
+          .update({ saldo: accion.payload.nuevoSaldo })
+          .eq('id', accion.payload.fondoId)
         if (error) throw error
       } else if (accion.tipo === 'MOVIMIENTO_FINANCIERO') {
         const { error: errMov } = await supabase.from('finanzas_movimientos').insert([accion.payload.movimiento])
@@ -877,7 +892,7 @@ export default function App() {
     else recargarDatos()
   }
 
-  // --- GESTIÓN DEL MÓDULO DE FINANZAS (FONDOS, ABONOS, EXTRACCIONES, INGRESOS Y EGRESOS) ---
+  // --- GESTIÓN DEL MÓDULO DE FINANZAS (SOPORTE COMPLETO PARA NÚMEROS ROJOS / NEGATIVOS) ---
   async function crearFondoFinanciero(e) {
     e.preventDefault()
     if (!nuevoFondo.nombre) return alert('Escribe un nombre para el fondo o cuenta.')
@@ -916,6 +931,43 @@ export default function App() {
     }
   }
 
+  // Permite ajustar manualmente el saldo de un fondo (incluso ponerle un valor negativo directo como -3 o -700)
+  async function ajustarSaldoManualFondo(fondo) {
+    const entrada = window.prompt(
+      `Ajustar saldo actual de "${fondo.nombre}".\nPuedes escribir números negativos si está en números rojos (ej. -3 o -700):`,
+      String(fondo.saldo || 0)
+    )
+    if (entrada === null) return
+    const nuevoSaldoNum = Number(entrada)
+    if (Number.isNaN(nuevoSaldoNum)) return alert('Por favor ingresa un número válido.')
+
+    function ajustarOffline() {
+      const actualizados = fondos.map(f => f.id === fondo.id ? { ...f, saldo: nuevoSaldoNum } : f)
+      setFondos(actualizados)
+      guardarCacheLocal(STORAGE_KEYS.FONDOS, actualizados)
+      encolarAccionOffline({
+        tipo: 'AJUSTAR_SALDO_FONDO',
+        payload: { fondoId: fondo.id, nuevoSaldo: nuevoSaldoNum }
+      })
+    }
+
+    if (!navigator.onLine) {
+      ajustarOffline()
+      return
+    }
+
+    const { error } = await supabase
+      .from('finanzas_fondos')
+      .update({ saldo: nuevoSaldoNum })
+      .eq('id', fondo.id)
+
+    if (error) {
+      ajustarOffline()
+    } else {
+      recargarDatos()
+    }
+  }
+
   async function ejecutarAccionRapidaFondo(e) {
     e.preventDefault()
     if (!modalFondoAccion || !montoAccionFondo || Number(montoAccionFondo) <= 0) {
@@ -926,11 +978,10 @@ export default function App() {
     const montoNum = Number(montoAccionFondo)
     const saldoActual = Number(fondo.saldo || 0)
 
-    // Si es FONDO: Abonar suma al fondo, Retirar resta del fondo.
-    // Si es DEUDA: Abonar reduce la deuda (o si se registra un cargo con Extraer, sube la deuda).
+    // SIN Math.max(0, ...): Ahora permite que el fondo baje a números negativos (-700, -3, etc.)
     const nuevoSaldo = operacion === 'ABONO_FONDO'
-      ? (fondo.tipo === 'DEUDA' ? Math.max(0, saldoActual - montoNum) : saldoActual + montoNum)
-      : (fondo.tipo === 'DEUDA' ? saldoActual + montoNum : Math.max(0, saldoActual - montoNum))
+      ? (fondo.tipo === 'DEUDA' ? saldoActual - montoNum : saldoActual + montoNum)
+      : (fondo.tipo === 'DEUDA' ? saldoActual + montoNum : saldoActual - montoNum)
 
     const payloadMov = {
       id: crypto.randomUUID(),
@@ -940,8 +991,8 @@ export default function App() {
       fondo_nombre: fondo.nombre,
       concepto: conceptoAccionFondo.trim() || (
         operacion === 'ABONO_FONDO'
-          ? (fondo.tipo === 'DEUDA' ? `Abono a deuda: ${fondo.nombre}` : `Abono a ${fondo.nombre}`)
-          : (fondo.tipo === 'DEUDA' ? `Nuevo cargo a: ${fondo.nombre}` : `Retiro / Uso de ${fondo.nombre}`)
+          ? (fondo.tipo === 'DEUDA' ? `Abono a deuda: ${fondo.nombre}` : `Ingreso / Abono a ${fondo.nombre}`)
+          : (fondo.tipo === 'DEUDA' ? `Nuevo cargo a: ${fondo.nombre}` : `Egreso / Retiro de ${fondo.nombre}`)
       ),
       monto: montoNum,
       metodo_pago: 'Efectivo',
@@ -1002,14 +1053,15 @@ export default function App() {
     let fondoObj = null
     let nuevoSaldoFondo = undefined
 
-    if (nuevoMovimiento.tipo === 'ABONO_FONDO' || nuevoMovimiento.tipo === 'RETIRO_FONDO') {
-      if (!nuevoMovimiento.fondo_id) return alert('Selecciona el fondo al que deseas abonar o retirar.')
+    if (nuevoMovimiento.fondo_id) {
       fondoObj = fondos.find(f => f.id === nuevoMovimiento.fondo_id)
       if (fondoObj) {
         const saldoAct = Number(fondoObj.saldo || 0)
-        nuevoSaldoFondo = nuevoMovimiento.tipo === 'ABONO_FONDO'
-          ? (fondoObj.tipo === 'DEUDA' ? Math.max(0, saldoAct - montoNum) : saldoAct + montoNum)
-          : (fondoObj.tipo === 'DEUDA' ? saldoAct + montoNum : Math.max(0, saldoAct - montoNum))
+        const esSumaAlFondo = nuevoMovimiento.tipo === 'INGRESO' || nuevoMovimiento.tipo === 'ABONO_FONDO'
+        // SIN Math.max(0, ...): Permite restar más allá de 0 y quedar en números rojos
+        nuevoSaldoFondo = esSumaAlFondo
+          ? (fondoObj.tipo === 'DEUDA' ? saldoAct - montoNum : saldoAct + montoNum)
+          : (fondoObj.tipo === 'DEUDA' ? saldoAct + montoNum : saldoAct - montoNum)
       }
     }
 
@@ -1078,9 +1130,11 @@ export default function App() {
         if (fondoObj) {
           const saldoAct = Number(fondoObj.saldo || 0)
           const montoNum = Number(mov.monto || 0)
-          const saldoRevertido = mov.tipo === 'ABONO_FONDO'
-            ? (fondoObj.tipo === 'DEUDA' ? saldoAct + montoNum : Math.max(0, saldoAct - montoNum))
-            : (fondoObj.tipo === 'DEUDA' ? Math.max(0, saldoAct - montoNum) : saldoAct + montoNum)
+          const eraPositivo = mov.tipo === 'ABONO_FONDO' || mov.tipo === 'INGRESO'
+          // Reversión exacta sin límite de 0
+          const saldoRevertido = eraPositivo
+            ? (fondoObj.tipo === 'DEUDA' ? saldoAct + montoNum : saldoAct - montoNum)
+            : (fondoObj.tipo === 'DEUDA' ? saldoAct - montoNum : saldoAct + montoNum)
 
           await supabase.from('finanzas_fondos').update({ saldo: saldoRevertido }).eq('id', fondoObj.id)
         }
@@ -1314,7 +1368,7 @@ export default function App() {
 
   const listaCortes = Object.values(cortesPorDia)
 
-  // --- MOTOR UNIFICADO DE ANALÍTICAS REALES Y FINANZAS SEPARADAS (JOYERÍA VS GALLETAS) ---
+  // --- MOTOR UNIFICADO DE ANALÍTICAS REALES Y FINANZAS SEPARADAS (CON SOPORTE PARA NÚMEROS ROJOS) ---
   const { analiticas, resumenFinanzas } = (() => {
     const mapaProductos = {}
     const mapaCategorias = {}
@@ -1344,7 +1398,6 @@ export default function App() {
     let ventasRealesTotales = 0
     let gananciaNetaTotalVentas = 0
 
-    // Contadores separados para Joyería vs Repostería/Galletas
     const statsJoyeria = { ventasReales: 0, costoRecuperado: 0, gananciaVentas: 0, descuentos: 0, piezas: 0 }
     const statsGalletas = { ventasReales: 0, costoRecuperado: 0, gananciaVentas: 0, descuentos: 0, piezas: 0 }
 
@@ -1352,14 +1405,12 @@ export default function App() {
       const itemsTicket = v.items || []
       const sumaBrutaItems = itemsTicket.reduce((acc, it) => acc + Number(it.subtotal || (Number(it.precio_unitario || 0) * Number(it.qty || 0))), 0)
       const totalCobradoTicket = Number(v.total || 0)
-      // Factor exacto para prorratear promociones (2x$40, 3x$50) y descuentos en cada artículo
       const factorRealTicket = sumaBrutaItems > 0 ? (totalCobradoTicket / sumaBrutaItems) : 1
 
       itemsTicket.forEach(item => {
         const cant = Number(item.qty || 0)
         const brutoItem = Number(item.subtotal || (Number(item.precio_unitario || 0) * cant))
         
-        // Si el ticket ya trae ingreso_real guardado lo usamos, si es venta anterior lo calculamos con factorRealTicket
         const realItem = item.ingreso_real !== undefined
           ? Number(item.ingreso_real)
           : (brutoItem * factorRealTicket)
@@ -1436,7 +1487,7 @@ export default function App() {
       })
     })
 
-    // Sumar movimientos financieros manuales (Ingresos extra, Egresos de insumos, Abonos a fondos)
+    // Sumar todos los movimientos manuales (tanto INGRESO/ABONO_FONDO como EGRESO/RETIRO_FONDO)
     let ingresosExtraJoyeria = 0
     let egresosJoyeria = 0
     let ingresosExtraGalletas = 0
@@ -1445,14 +1496,15 @@ export default function App() {
     movimientos.forEach(m => {
       const monto = Number(m.monto || 0)
       if (m.area === 'JOYERIA') {
-        if (m.tipo === 'INGRESO') ingresosExtraJoyeria += monto
-        if (m.tipo === 'EGRESO') egresosJoyeria += monto
+        if (m.tipo === 'INGRESO' || m.tipo === 'ABONO_FONDO') ingresosExtraJoyeria += monto
+        if (m.tipo === 'EGRESO' || m.tipo === 'RETIRO_FONDO') egresosJoyeria += monto
       } else if (m.area === 'GALLETAS') {
-        if (m.tipo === 'INGRESO') ingresosExtraGalletas += monto
-        if (m.tipo === 'EGRESO') egresosGalletas += monto
+        if (m.tipo === 'INGRESO' || m.tipo === 'ABONO_FONDO') ingresosExtraGalletas += monto
+        if (m.tipo === 'EGRESO' || m.tipo === 'RETIRO_FONDO') egresosGalletas += monto
       }
     })
 
+    // La suma de fondos respeta saldos negativos (si un fondo está en -$3, resta $3)
     const totalEnFondosAhorro = fondos
       .filter(f => f.tipo !== 'DEUDA')
       .reduce((acc, f) => acc + Number(f.saldo || 0), 0)
@@ -1504,6 +1556,7 @@ export default function App() {
           ...statsJoyeria,
           ingresosExtra: ingresosExtraJoyeria,
           egresos: egresosJoyeria,
+          // Flujo de Caja Real: Todo lo que entró (ventas POS + ingresos manuales) menos todo lo que salió (egresos/reinversiones)
           flujoNetoTotal: statsJoyeria.ventasReales + ingresosExtraJoyeria - egresosJoyeria,
           utilidadLibre: statsJoyeria.gananciaVentas + ingresosExtraJoyeria - egresosJoyeria
         },
@@ -2931,7 +2984,7 @@ export default function App() {
               <div>
                 <h2 className="text-2xl font-bold text-gray-800">Centro Financiero y Fondos</h2>
                 <p className="text-xs text-gray-500">
-                  Control separado de Joyería y Repostería (Galletas), fondos de reinversión (Nihao, Shein, Caja) y egresos.
+                  Control separado de Joyería y Repostería (Galletas), fondos con soporte para números rojos y bitácora de reinversión.
                 </p>
               </div>
               <button
@@ -2942,10 +2995,12 @@ export default function App() {
               </button>
             </div>
 
-            {/* 1. BILLETERAS SEPARADAS: JOYERÍA VS GALLETAS */}
+            {/* 1. BILLETERAS SEPARADAS: JOYERÍA VS GALLETAS (SOPORTA NÚMEROS ROJOS) */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
               {/* Billetera Joyería (Destellos de Oro) */}
-              <div className="bg-white p-5 rounded-2xl border border-purple-200 shadow-2xs space-y-3">
+              <div className={`bg-white p-5 rounded-2xl border shadow-2xs space-y-3 ${
+                resumenFinanzas.joyeria.flujoNetoTotal < 0 ? 'border-red-300 bg-red-50/10' : 'border-purple-200'
+              }`}>
                 <div className="flex items-center justify-between border-b border-purple-100 pb-3">
                   <div className="flex items-center gap-2.5">
                     <div className="w-10 h-10 rounded-xl bg-purple-100 text-purple-800 flex items-center justify-center">
@@ -2957,69 +3012,87 @@ export default function App() {
                     </div>
                   </div>
                   <div className="text-right">
-                    <span className="text-[11px] font-bold uppercase text-purple-700 block">Utilidad Neta Libre</span>
-                    <span className="text-2xl font-extrabold text-purple-950">
-                      ${resumenFinanzas.joyeria.utilidadLibre.toFixed(2)}
+                    <span className={`text-[11px] font-bold uppercase block ${
+                      resumenFinanzas.joyeria.flujoNetoTotal < 0 ? 'text-red-600' : 'text-purple-700'
+                    }`}>
+                      {resumenFinanzas.joyeria.flujoNetoTotal < 0 ? '⚠️ Balance en Números Rojos' : 'Balance Neto de Caja'}
+                    </span>
+                    <span className={`text-2xl font-extrabold ${
+                      resumenFinanzas.joyeria.flujoNetoTotal < 0 ? 'text-red-600' : 'text-purple-950'
+                    }`}>
+                      {formatearMoneda(resumenFinanzas.joyeria.flujoNetoTotal)}
                     </span>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                   <div className="p-2.5 rounded-xl bg-purple-50/60">
-                    <span className="text-gray-500 block">Ventas Cobradas</span>
-                    <strong className="text-sm text-gray-900">${resumenFinanzas.joyeria.ventasReales.toFixed(2)}</strong>
+                    <span className="text-gray-500 block">Ventas + Ingresos</span>
+                    <strong className="text-sm text-gray-900">
+                      ${(resumenFinanzas.joyeria.ventasReales + resumenFinanzas.joyeria.ingresosExtra).toFixed(2)}
+                    </strong>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-red-50/70">
+                    <span className="text-red-700 block">Egresos / Inversión</span>
+                    <strong className="text-sm text-red-700">-${resumenFinanzas.joyeria.egresos.toFixed(2)}</strong>
                   </div>
                   <div className="p-2.5 rounded-xl bg-gray-50">
-                    <span className="text-gray-500 block">Costo Prod. (Base)</span>
+                    <span className="text-gray-500 block">Costo Piezas POS</span>
                     <strong className="text-sm text-gray-700">${resumenFinanzas.joyeria.costoRecuperado.toFixed(2)}</strong>
                   </div>
                   <div className="p-2.5 rounded-xl bg-emerald-50/70">
-                    <span className="text-emerald-800 block">Ganancia Ventas</span>
-                    <strong className="text-sm text-emerald-800">${resumenFinanzas.joyeria.gananciaVentas.toFixed(2)}</strong>
-                  </div>
-                  <div className="p-2.5 rounded-xl bg-red-50/70">
-                    <span className="text-red-700 block">Gastos / Egresos</span>
-                    <strong className="text-sm text-red-700">-${resumenFinanzas.joyeria.egresos.toFixed(2)}</strong>
+                    <span className="text-emerald-800 block">Margen Ventas POS</span>
+                    <strong className="text-sm text-emerald-800">{formatearMoneda(resumenFinanzas.joyeria.gananciaVentas)}</strong>
                   </div>
                 </div>
               </div>
 
               {/* Billetera Repostería (Galletas) */}
-              <div className="bg-white p-5 rounded-2xl border border-amber-200 shadow-2xs space-y-3">
+              <div className={`bg-white p-5 rounded-2xl border shadow-2xs space-y-3 ${
+                resumenFinanzas.galletas.flujoNetoTotal < 0 ? 'border-red-300 bg-red-50/10' : 'border-amber-200'
+              }`}>
                 <div className="flex items-center justify-between border-b border-amber-100 pb-3">
                   <div className="flex items-center gap-2.5">
                     <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center">
                       <Cookie size={20} />
                     </div>
                     <div>
-                      <h3 className="font-extrabold text-base text-gray-800">Repostería (Venta de Galletas)</h3>
+                      <h3 className="font-extrabold text-base text-gray-800">Repostería (Cuenta Galletas)</h3>
                       <span className="text-xs text-gray-500">{resumenFinanzas.galletas.piezas} paquetes/piezas vendidos</span>
                     </div>
                   </div>
                   <div className="text-right">
-                    <span className="text-[11px] font-bold uppercase text-amber-800 block">Utilidad Neta Libre</span>
-                    <span className="text-2xl font-extrabold text-amber-900">
-                      ${resumenFinanzas.galletas.utilidadLibre.toFixed(2)}
+                    <span className={`text-[11px] font-bold uppercase block ${
+                      resumenFinanzas.galletas.flujoNetoTotal < 0 ? 'text-red-600' : 'text-amber-800'
+                    }`}>
+                      {resumenFinanzas.galletas.flujoNetoTotal < 0 ? '⚠️ Balance en Números Rojos' : 'Balance Neto de Caja'}
+                    </span>
+                    <span className={`text-2xl font-extrabold ${
+                      resumenFinanzas.galletas.flujoNetoTotal < 0 ? 'text-red-600' : 'text-amber-900'
+                    }`}>
+                      {formatearMoneda(resumenFinanzas.galletas.flujoNetoTotal)}
                     </span>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                   <div className="p-2.5 rounded-xl bg-amber-50/60">
-                    <span className="text-gray-500 block">Ventas Cobradas</span>
-                    <strong className="text-sm text-gray-900">${resumenFinanzas.galletas.ventasReales.toFixed(2)}</strong>
+                    <span className="text-gray-500 block">Ventas + Ingresos</span>
+                    <strong className="text-sm text-gray-900">
+                      ${(resumenFinanzas.galletas.ventasReales + resumenFinanzas.galletas.ingresosExtra).toFixed(2)}
+                    </strong>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-red-50/70">
+                    <span className="text-red-700 block">Egresos / Inversión</span>
+                    <strong className="text-sm text-red-700">-${resumenFinanzas.galletas.egresos.toFixed(2)}</strong>
                   </div>
                   <div className="p-2.5 rounded-xl bg-gray-50">
-                    <span className="text-gray-500 block">Costo Insumos</span>
+                    <span className="text-gray-500 block">Costo Piezas POS</span>
                     <strong className="text-sm text-gray-700">${resumenFinanzas.galletas.costoRecuperado.toFixed(2)}</strong>
                   </div>
                   <div className="p-2.5 rounded-xl bg-emerald-50/70">
-                    <span className="text-emerald-800 block">Ganancia Ventas</span>
-                    <strong className="text-sm text-emerald-800">${resumenFinanzas.galletas.gananciaVentas.toFixed(2)}</strong>
-                  </div>
-                  <div className="p-2.5 rounded-xl bg-red-50/70">
-                    <span className="text-red-700 block">Gastos / Egresos</span>
-                    <strong className="text-sm text-red-700">-${resumenFinanzas.galletas.egresos.toFixed(2)}</strong>
+                    <span className="text-emerald-800 block">Margen Ventas POS</span>
+                    <strong className="text-sm text-emerald-800">{formatearMoneda(resumenFinanzas.galletas.gananciaVentas)}</strong>
                   </div>
                 </div>
               </div>
@@ -3028,7 +3101,7 @@ export default function App() {
             {/* Formulario desplegable para crear un nuevo fondo */}
             {mostrarFormNuevoFondo && (
               <form onSubmit={crearFondoFinanciero} className="bg-white p-5 rounded-2xl border border-purple-200 shadow-xs space-y-3">
-                <h4 className="font-bold text-sm text-purple-950">Agregar Nuevo Fondo o Cuenta por Pagar</h4>
+                <h4 className="font-bold text-sm text-purple-950">Agregar Nuevo Fondo o Cuenta (Soporta saldo inicial negativo)</h4>
                 <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
                   <input
                     type="text"
@@ -3047,18 +3120,18 @@ export default function App() {
                     <option value="GALLETAS">Área: Galletas</option>
                     <option value="GENERAL">Área: General</option>
                   </select>
-                  <select
-                    value={nuevoFondo.tipo}
-                    onChange={e => setNuevoFondo({...nuevoFondo, tipo: e.target.value})}
-                    className="px-3 py-2 border border-pink-200 rounded-xl text-xs bg-white font-semibold"
-                  >
-                    <option value="FONDO">Fondo de Ahorro/Inversión</option>
-                    <option value="DEUDA">Deuda / Tarjeta por Pagar</option>
-                  </select>
                   <input
                     type="number"
                     step="0.01"
-                    placeholder="Meta o Tope ($)"
+                    placeholder="Saldo inicial (ej. -700 o 0)"
+                    value={nuevoFondo.saldo}
+                    onChange={e => setNuevoFondo({...nuevoFondo, saldo: e.target.value})}
+                    className="px-3 py-2 border border-pink-200 rounded-xl text-xs font-bold"
+                  />
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="Meta ($)"
                     value={nuevoFondo.meta}
                     onChange={e => setNuevoFondo({...nuevoFondo, meta: e.target.value})}
                     className="px-3 py-2 border border-pink-200 rounded-xl text-xs"
@@ -3077,13 +3150,18 @@ export default function App() {
 
             {/* 2. BÓVEDA DE FONDOS (NIHAO, SHEIN, CAJA, GALLETAS, TARJETA) */}
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="font-bold text-base text-gray-800 flex items-center gap-2">
                   <PiggyBank size={19} className="text-purple-700" />
-                  Bóveda de Fondos y Deudas (Abonar y Extraer)
+                  Bóveda de Fondos y Cuentas (Abonar, Extraer o Reinvertir)
                 </h3>
                 <div className="text-xs text-gray-500 flex gap-4">
-                  <span>Total en Fondos: <strong className="text-emerald-700">${resumenFinanzas.totalEnFondosAhorro.toFixed(2)}</strong></span>
+                  <span>
+                    Balance Neto en Fondos:{' '}
+                    <strong className={resumenFinanzas.totalEnFondosAhorro < 0 ? 'text-red-600' : 'text-emerald-700'}>
+                      {formatearMoneda(resumenFinanzas.totalEnFondosAhorro)}
+                    </strong>
+                  </span>
                   {resumenFinanzas.totalDeudasPendientes > 0 && (
                     <span>Deuda Pendiente: <strong className="text-red-600">${resumenFinanzas.totalDeudasPendientes.toFixed(2)}</strong></span>
                   )}
@@ -3099,14 +3177,19 @@ export default function App() {
                   {fondos.map(fondo => {
                     const saldo = Number(fondo.saldo || 0)
                     const meta = Number(fondo.meta || 0)
-                    const porcentaje = meta > 0 ? Math.min(100, Math.round((saldo / meta) * 100)) : 0
+                    const enNumerosRojos = saldo < 0
+                    const porcentaje = meta > 0 && saldo > 0 ? Math.min(100, Math.round((saldo / meta) * 100)) : 0
                     const esDeuda = fondo.tipo === 'DEUDA'
 
                     return (
                       <div
                         key={fondo.id}
-                        className={`bg-white p-4 rounded-2xl border shadow-2xs flex flex-col justify-between space-y-3 ${
-                          esDeuda ? 'border-red-200' : 'border-pink-100'
+                        className={`bg-white p-4 rounded-2xl border shadow-2xs flex flex-col justify-between space-y-3 transition-all ${
+                          enNumerosRojos
+                            ? 'border-red-300 bg-red-50/20'
+                            : esDeuda
+                              ? 'border-red-200'
+                              : 'border-pink-100'
                         }`}
                       >
                         <div>
@@ -3118,26 +3201,47 @@ export default function App() {
                             }`}>
                               {fondo.area}
                             </span>
-                            <span className={`text-[10px] font-bold ${esDeuda ? 'text-red-600' : 'text-emerald-700'}`}>
-                              {esDeuda ? '💳 DEUDA POR LIQUIDAR' : '🏦 FONDO DISPONIBLE'}
-                            </span>
+
+                            <div className="flex items-center gap-1.5">
+                              <span className={`text-[10px] font-bold ${
+                                enNumerosRojos ? 'text-red-600' : esDeuda ? 'text-red-600' : 'text-emerald-700'
+                              }`}>
+                                {enNumerosRojos
+                                  ? '⚠️ EN NÚMEROS ROJOS'
+                                  : esDeuda
+                                    ? '💳 DEUDA POR LIQUIDAR'
+                                    : '🏦 FONDO DISPONIBLE'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => ajustarSaldoManualFondo(fondo)}
+                                className="p-1 text-gray-400 hover:text-purple-800 rounded cursor-pointer"
+                                title="Ajustar o corregir saldo manualmente"
+                              >
+                                <Edit2 size={13} />
+                              </button>
+                            </div>
                           </div>
 
                           <h4 className="font-extrabold text-base text-gray-800">{fondo.nombre}</h4>
-                          <p className={`text-2xl font-extrabold mt-1 ${esDeuda ? 'text-red-700' : 'text-purple-950'}`}>
-                            ${saldo.toFixed(2)}
+                          <p className={`text-2xl font-extrabold mt-1 ${
+                            enNumerosRojos || esDeuda ? 'text-red-600' : 'text-purple-950'
+                          }`}>
+                            {formatearMoneda(saldo)}
                           </p>
 
                           {meta > 0 && (
                             <div className="mt-2 space-y-1">
                               <div className="flex justify-between text-[11px] text-gray-500">
                                 <span>{esDeuda ? 'Tope referencia:' : 'Meta para pedido:'} ${meta.toFixed(0)}</span>
-                                <span className="font-bold">{porcentaje}%</span>
+                                <span className="font-bold">{enNumerosRojos ? 'Déficit' : `${porcentaje}%`}</span>
                               </div>
                               <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
                                 <div
-                                  className={`h-full rounded-full ${esDeuda ? 'bg-red-500' : 'bg-emerald-500'}`}
-                                  style={{ width: `${porcentaje}%` }}
+                                  className={`h-full rounded-full ${
+                                    enNumerosRojos ? 'bg-red-500 w-full opacity-40' : esDeuda ? 'bg-red-500' : 'bg-emerald-500'
+                                  }`}
+                                  style={enNumerosRojos ? undefined : { width: `${porcentaje}%` }}
                                 />
                               </div>
                             </div>
@@ -3155,7 +3259,7 @@ export default function App() {
                             className="py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1 cursor-pointer"
                           >
                             <ArrowUpCircle size={14} />
-                            {esDeuda ? 'Abonar Pago' : '+ Abonar'}
+                            {esDeuda ? 'Abonar Pago' : '+ Ingresar'}
                           </button>
 
                           <button
@@ -3165,10 +3269,10 @@ export default function App() {
                               setMontoAccionFondo('')
                               setConceptoAccionFondo('')
                             }}
-                            className="py-2 px-3 rounded-xl bg-pink-50 hover:bg-pink-100 text-purple-950 border border-pink-200 font-bold text-xs flex items-center justify-center gap-1 cursor-pointer"
+                            className="py-2 px-3 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-bold text-xs flex items-center justify-center gap-1 cursor-pointer"
                           >
                             <ArrowDownCircle size={14} />
-                            {esDeuda ? '+ Subir Deuda' : '- Extraer'}
+                            {esDeuda ? '+ Subir Deuda' : '- Egresar'}
                           </button>
                         </div>
                       </div>
@@ -3182,7 +3286,7 @@ export default function App() {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
               <form onSubmit={registrarMovimientoGeneral} className="lg:col-span-5 bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs space-y-3.5">
                 <h3 className="font-bold text-base text-gray-800 border-b border-pink-100 pb-2">
-                  Registrar Ingreso o Egreso Manual
+                  Registrar Inversión, Ingreso o Egreso
                 </h3>
 
                 <div className="grid grid-cols-2 gap-2.5">
@@ -3206,38 +3310,38 @@ export default function App() {
                       onChange={e => setNuevoMovimiento({...nuevoMovimiento, tipo: e.target.value})}
                       className="w-full px-3 py-2 border border-pink-200 rounded-xl text-xs bg-white font-bold"
                     >
-                      <option value="EGRESO">🔻 Egreso / Gasto</option>
-                      <option value="INGRESO">🔺 Ingreso Extra</option>
-                      <option value="ABONO_FONDO">🏦 Abonar a un Fondo</option>
-                      <option value="RETIRO_FONDO">💸 Extraer de un Fondo</option>
+                      <option value="EGRESO">🔻 Egreso / Reinversión (-)</option>
+                      <option value="INGRESO">🔺 Ingreso / Recuperación (+)</option>
+                      <option value="ABONO_FONDO">🏦 Abonar a Fondo (+)</option>
+                      <option value="RETIRO_FONDO">💸 Extraer de Fondo (-)</option>
                     </select>
                   </div>
                 </div>
 
-                {(nuevoMovimiento.tipo === 'ABONO_FONDO' || nuevoMovimiento.tipo === 'RETIRO_FONDO') && (
-                  <div>
-                    <label className="block text-xs font-bold text-purple-900 mb-1">Selecciona el Fondo *</label>
-                    <select
-                      value={nuevoMovimiento.fondo_id}
-                      onChange={e => setNuevoMovimiento({...nuevoMovimiento, fondo_id: e.target.value})}
-                      className="w-full px-3 py-2 border border-purple-200 bg-purple-50/50 rounded-xl text-xs font-bold"
-                    >
-                      <option value="">-- Elige un fondo --</option>
-                      {fondos.map(f => (
-                        <option key={f.id} value={f.id}>
-                          {f.nombre} (Saldo actual: ${Number(f.saldo || 0).toFixed(2)})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
+                <div>
+                  <label className="block text-xs font-bold text-purple-900 mb-1">
+                    Afectar también a un Fondo (Opcional, ej. Fondo para Galletas)
+                  </label>
+                  <select
+                    value={nuevoMovimiento.fondo_id}
+                    onChange={e => setNuevoMovimiento({...nuevoMovimiento, fondo_id: e.target.value})}
+                    className="w-full px-3 py-2 border border-purple-200 bg-purple-50/50 rounded-xl text-xs font-bold"
+                  >
+                    <option value="">-- Solo registrar en la billetera del área --</option>
+                    {fondos.map(f => (
+                      <option key={f.id} value={f.id}>
+                        {f.nombre} (Saldo actual: {formatearMoneda(f.saldo)})
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
                 <div>
                   <label className="block text-xs font-bold text-gray-600 mb-1">Concepto / Descripción *</label>
                   <input
                     type="text"
                     required
-                    placeholder="Ej. Compra de mantequilla y mermelada / Pedido Nihao..."
+                    placeholder="Ej. Inversión inicial galletas / Reinversión insumos..."
                     value={nuevoMovimiento.concepto}
                     onChange={e => setNuevoMovimiento({...nuevoMovimiento, concepto: e.target.value})}
                     className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm"
@@ -3251,7 +3355,7 @@ export default function App() {
                       type="number"
                       step="0.01"
                       required
-                      placeholder="0.00"
+                      placeholder="Ej. 700.00"
                       value={nuevoMovimiento.monto}
                       onChange={e => setNuevoMovimiento({...nuevoMovimiento, monto: e.target.value})}
                       className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm font-bold text-purple-950"
@@ -3563,7 +3667,6 @@ export default function App() {
               </p>
             </div>
 
-            {/* Tarjetas de Auditoría de Ventas (Bruto vs Promos vs Real vs Ganancia Neta) */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
               <div className="bg-white p-4 rounded-2xl border border-pink-100 shadow-2xs">
                 <span className="text-xs text-gray-500 font-semibold">Venta a Precio Normal (Bruto)</span>
@@ -3592,7 +3695,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Tarjetas de Valor de Inventario Actual */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="bg-white p-4 rounded-2xl border border-pink-100 shadow-2xs">
                 <span className="text-xs text-gray-500 font-semibold">Inversión Actual en Stock (Costo)</span>
@@ -3616,7 +3718,6 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* TABLA 1: TOP MÁS VENDIDOS CON GANANCIA REAL POST-PROMO */}
               <div className="bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs">
                 <h3 className="font-bold text-base text-gray-800 mb-3 flex items-center gap-2">
                   <TrendingUp size={18} className="text-purple-700" />
@@ -3652,7 +3753,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* TABLA 2: RENDIMIENTO REAL POR CATEGORÍA */}
               <div className="bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs">
                 <h3 className="font-bold text-base text-gray-800 mb-3 flex items-center gap-2">
                   <BarChart3 size={18} className="text-purple-700" />
@@ -3687,7 +3787,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* GUÍA DE COMPRA: QUÉ SURTIR Y QUÉ NO COMPRAR */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="bg-white p-5 rounded-2xl border border-emerald-200 shadow-2xs">
                 <h3 className="font-bold text-base text-emerald-900 mb-1 flex items-center gap-2">
@@ -3761,7 +3860,7 @@ export default function App() {
           <form onSubmit={ejecutarAccionRapidaFondo} className="bg-white w-full max-w-sm rounded-3xl shadow-xl p-5 border border-pink-100 space-y-4">
             <div className="flex justify-between items-center border-b border-pink-100 pb-2">
               <h3 className="font-extrabold text-base text-gray-800">
-                {modalFondoAccion.operacion === 'ABONO_FONDO' ? '➕ Abonar a ' : '➖ Extraer de '}
+                {modalFondoAccion.operacion === 'ABONO_FONDO' ? '➕ Ingresar / Abonar a ' : '➖ Egresar / Extraer de '}
                 {modalFondoAccion.fondo.nombre}
               </h3>
               <button type="button" onClick={() => setModalFondoAccion(null)} className="text-gray-400 hover:text-gray-600">
@@ -3771,7 +3870,9 @@ export default function App() {
 
             <div className="p-3 rounded-xl bg-pink-50/60 text-xs flex justify-between">
               <span className="text-gray-600">Saldo Actual:</span>
-              <strong className="text-purple-950 text-sm">${Number(modalFondoAccion.fondo.saldo || 0).toFixed(2)}</strong>
+              <strong className={`text-sm ${Number(modalFondoAccion.fondo.saldo || 0) < 0 ? 'text-red-600' : 'text-purple-950'}`}>
+                {formatearMoneda(modalFondoAccion.fondo.saldo)}
+              </strong>
             </div>
 
             <div>
@@ -3781,7 +3882,7 @@ export default function App() {
                 step="0.01"
                 required
                 autoFocus
-                placeholder="Ej. 200.00"
+                placeholder="Ej. 700.00"
                 value={montoAccionFondo}
                 onChange={e => setMontoAccionFondo(e.target.value)}
                 className="w-full px-3 py-2.5 border border-pink-200 rounded-xl text-base font-extrabold text-purple-950"
@@ -3792,7 +3893,7 @@ export default function App() {
               <label className="block text-xs font-bold text-gray-600 mb-1">Nota o Concepto (Opcional)</label>
               <input
                 type="text"
-                placeholder="Ej. Apartado de venta del domingo / Pago pedido..."
+                placeholder="Ej. Inversión inicial / Recuperación ventas / Reinversión..."
                 value={conceptoAccionFondo}
                 onChange={e => setConceptoAccionFondo(e.target.value)}
                 className="w-full px-3 py-2 border border-pink-200 rounded-xl text-xs"
