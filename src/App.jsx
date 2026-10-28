@@ -4,22 +4,24 @@ import {
   ShoppingBag, Package, PlusCircle, Search, Trash2, 
   Eye, EyeOff, Edit2, Check, X, Camera, Image, Sparkles, RefreshCw,
   Receipt, BarChart3, Banknote, CreditCard, Smartphone, Printer, ChevronDown, ChevronUp,
-  Tag, TrendingUp, AlertTriangle, Layers, Calendar, ClipboardList, Wifi, WifiOff, CloudUpload
+  Tag, TrendingUp, AlertTriangle, Layers, Calendar, ClipboardList, Wifi, WifiOff, CloudUpload,
+  Wallet, ArrowUpCircle, ArrowDownCircle, PiggyBank, Cookie, Gem
 } from 'lucide-react'
 
-const CATEGORIAS = ['TODAS', 'CADENAS-COLLARES', 'ARETES', 'PULSERAS', 'ANILLOS', 'LLAVEROS', 'PINES']
+const CATEGORIAS = ['TODAS', 'CADENAS-COLLARES', 'ARETES', 'PULSERAS', 'ANILLOS', 'LLAVEROS', 'PINES', 'REPOSTERÍA']
 const METODOS_PAGO = [
   { id: 'Efectivo', label: 'Efectivo', icon: Banknote },
   { id: 'Transferencia', label: 'Transferencia', icon: Smartphone },
   { id: 'Tarjeta', label: 'Tarjeta', icon: CreditCard }
 ]
 
-// Claves de almacenamiento interno en la tablet/teléfono
 const STORAGE_KEYS = {
   PRODUCTOS: 'destellos_cache_productos',
   VENTAS: 'destellos_cache_ventas',
   PROMOS: 'destellos_cache_promos',
   PEDIDOS: 'destellos_cache_pedidos',
+  FONDOS: 'destellos_cache_fondos',
+  MOVIMIENTOS: 'destellos_cache_movimientos',
   COLA_SYNC: 'destellos_cola_offline'
 }
 
@@ -137,6 +139,20 @@ async function procesarColaOfflineEnServidor(colaActual) {
           .update({ estado: accion.payload.estado })
           .eq('id', accion.payload.id)
         if (error) throw error
+      } else if (accion.tipo === 'CREAR_FONDO') {
+        const { error } = await supabase.from('finanzas_fondos').insert([accion.payload])
+        if (error) throw error
+      } else if (accion.tipo === 'MOVIMIENTO_FINANCIERO') {
+        const { error: errMov } = await supabase.from('finanzas_movimientos').insert([accion.payload.movimiento])
+        if (errMov) throw errMov
+
+        if (accion.payload.fondoId && accion.payload.nuevoSaldo !== undefined) {
+          const { error: errFondo } = await supabase
+            .from('finanzas_fondos')
+            .update({ saldo: accion.payload.nuevoSaldo })
+            .eq('id', accion.payload.fondoId)
+          if (errFondo) throw errFondo
+        }
       }
     } catch (err) {
       console.error('Operación aún pendiente por sincronizar:', accion.tipo, err)
@@ -148,14 +164,15 @@ async function procesarColaOfflineEnServidor(colaActual) {
 }
 
 export default function App() {
-  // 'ventas' | 'inventario' | 'agregar' | 'promociones' | 'pedidos' | 'calendario' | 'tickets' | 'cortes' | 'analiticas'
+  // 'ventas' | 'inventario' | 'agregar' | 'promociones' | 'pedidos' | 'calendario' | 'tickets' | 'cortes' | 'finanzas' | 'analiticas'
   const [vistaActiva, setVistaActiva] = useState('ventas')
   
-  // Inicialización inmediata desde caché local para que funcione en el malecón sin internet
   const [productos, setProductos] = useState(() => leerCacheLocal(STORAGE_KEYS.PRODUCTOS, []))
   const [ventas, setVentas] = useState(() => leerCacheLocal(STORAGE_KEYS.VENTAS, []))
   const [promociones, setPromociones] = useState(() => leerCacheLocal(STORAGE_KEYS.PROMOS, []))
   const [pedidos, setPedidos] = useState(() => leerCacheLocal(STORAGE_KEYS.PEDIDOS, []))
+  const [fondos, setFondos] = useState(() => leerCacheLocal(STORAGE_KEYS.FONDOS, []))
+  const [movimientos, setMovimientos] = useState(() => leerCacheLocal(STORAGE_KEYS.MOVIMIENTOS, []))
   const [colaOffline, setColaOffline] = useState(() => leerCacheLocal(STORAGE_KEYS.COLA_SYNC, []))
   
   const [esOnline, setEsOnline] = useState(() => navigator.onLine)
@@ -223,7 +240,28 @@ export default function App() {
     anticipo: ''
   })
 
-  // Función auxiliar para guardar operaciones en la cola local cuando no hay internet
+  // Estados para el Módulo de Finanzas
+  const [filtroAreaFinanzas, setFiltroAreaFinanzas] = useState('TODAS') // 'TODAS' | 'JOYERIA' | 'GALLETAS' | 'GENERAL'
+  const [nuevoMovimiento, setNuevoMovimiento] = useState({
+    area: 'JOYERIA',
+    tipo: 'EGRESO', // 'INGRESO' | 'EGRESO' | 'ABONO_FONDO' | 'RETIRO_FONDO'
+    fondo_id: '',
+    concepto: '',
+    monto: '',
+    metodo_pago: 'Efectivo'
+  })
+  const [modalFondoAccion, setModalFondoAccion] = useState(null) // { fondo, operacion: 'ABONO_FONDO' | 'RETIRO_FONDO' }
+  const [montoAccionFondo, setMontoAccionFondo] = useState('')
+  const [conceptoAccionFondo, setConceptoAccionFondo] = useState('')
+  const [mostrarFormNuevoFondo, setMostrarFormNuevoFondo] = useState(false)
+  const [nuevoFondo, setNuevoFondo] = useState({
+    nombre: '',
+    area: 'JOYERIA',
+    tipo: 'FONDO',
+    saldo: '',
+    meta: ''
+  })
+
   function encolarAccionOffline(nuevaAccion) {
     setColaOffline(prev => {
       const actualizada = [...prev, { ...nuevaAccion, timestamp: new Date().toISOString() }]
@@ -232,7 +270,6 @@ export default function App() {
     })
   }
 
-  // Detector de conexión y sincronización automática cuando regresa el internet
   useEffect(() => {
     let cancelado = false
 
@@ -242,7 +279,6 @@ export default function App() {
         return
       }
 
-      // 1. Si hay operaciones guardadas en la tablet sin internet, subirlas primero
       const colaGuardada = leerCacheLocal(STORAGE_KEYS.COLA_SYNC, [])
       if (colaGuardada.length > 0) {
         if (!cancelado) setSincronizando(true)
@@ -254,13 +290,14 @@ export default function App() {
         }
       }
 
-      // 2. Descargar datos frescos de Supabase y actualizar el caché local
       try {
-        const [resProductos, resVentas, resPromos, resPedidos] = await Promise.all([
+        const [resProductos, resVentas, resPromos, resPedidos, resFondos, resMovs] = await Promise.all([
           supabase.from('productos').select('*').order('nombre_producto', { ascending: true }),
           supabase.from('ventas').select('*').order('created_at', { ascending: false }),
           supabase.from('promociones').select('*').order('created_at', { ascending: false }),
-          supabase.from('pedidos').select('*').order('fecha_entrega', { ascending: true })
+          supabase.from('pedidos').select('*').order('fecha_entrega', { ascending: true }),
+          supabase.from('finanzas_fondos').select('*').order('created_at', { ascending: true }),
+          supabase.from('finanzas_movimientos').select('*').order('created_at', { ascending: false })
         ])
 
         if (cancelado) return
@@ -280,6 +317,14 @@ export default function App() {
         if (!resPedidos.error && resPedidos.data) {
           setPedidos(resPedidos.data)
           guardarCacheLocal(STORAGE_KEYS.PEDIDOS, resPedidos.data)
+        }
+        if (!resFondos.error && resFondos.data) {
+          setFondos(resFondos.data)
+          guardarCacheLocal(STORAGE_KEYS.FONDOS, resFondos.data)
+        }
+        if (!resMovs.error && resMovs.data) {
+          setMovimientos(resMovs.data)
+          guardarCacheLocal(STORAGE_KEYS.MOVIMIENTOS, resMovs.data)
         }
       } catch (err) {
         console.warn('Trabajando con datos en caché local:', err)
@@ -309,10 +354,9 @@ export default function App() {
     }
   }, [])
 
-  // Botón manual de sincronización
   async function recargarDatos() {
     if (!navigator.onLine) {
-      return alert('Estás en Modo Offline (sin internet). Todas tus ventas y cambios están seguros en la memoria de la tablet y se subirán en cuanto tengas conexión.')
+      return alert('Estás en Modo Offline (sin internet). Todas tus ventas y movimientos están seguros en la memoria del dispositivo.')
     }
 
     setCargando(true)
@@ -325,11 +369,13 @@ export default function App() {
       setSincronizando(false)
     }
 
-    const [resProductos, resVentas, resPromos, resPedidos] = await Promise.all([
+    const [resProductos, resVentas, resPromos, resPedidos, resFondos, resMovs] = await Promise.all([
       supabase.from('productos').select('*').order('nombre_producto', { ascending: true }),
       supabase.from('ventas').select('*').order('created_at', { ascending: false }),
       supabase.from('promociones').select('*').order('created_at', { ascending: false }),
-      supabase.from('pedidos').select('*').order('fecha_entrega', { ascending: true })
+      supabase.from('pedidos').select('*').order('fecha_entrega', { ascending: true }),
+      supabase.from('finanzas_fondos').select('*').order('created_at', { ascending: true }),
+      supabase.from('finanzas_movimientos').select('*').order('created_at', { ascending: false })
     ])
 
     if (!resProductos.error && resProductos.data) {
@@ -347,6 +393,14 @@ export default function App() {
     if (!resPedidos.error && resPedidos.data) {
       setPedidos(resPedidos.data)
       guardarCacheLocal(STORAGE_KEYS.PEDIDOS, resPedidos.data)
+    }
+    if (!resFondos.error && resFondos.data) {
+      setFondos(resFondos.data)
+      guardarCacheLocal(STORAGE_KEYS.FONDOS, resFondos.data)
+    }
+    if (!resMovs.error && resMovs.data) {
+      setMovimientos(resMovs.data)
+      guardarCacheLocal(STORAGE_KEYS.MOVIMIENTOS, resMovs.data)
     }
     setCargando(false)
   }
@@ -407,6 +461,7 @@ export default function App() {
     }).filter(Boolean))
   }
 
+  // Motor de Promociones con desglose de descuento exacto por cada artículo del carrito
   const calculoCarrito = (() => {
     const subtotalSinPromo = carrito.reduce((acc, item) => acc + (Number(item.precio_publico) * item.qty), 0)
     const costoTotal = carrito.reduce((acc, item) => acc + (Number(item.costo_produccion || 0) * item.qty), 0)
@@ -414,9 +469,11 @@ export default function App() {
     let descuentoPromociones = 0
     const detallePromosAplicadas = []
     const itemsYaProcesados = new Set()
+    const descuentosPorItemId = {}
 
     const promosActivas = promociones.filter(p => p.activa)
 
+    // 1. Promociones por PRODUCTO
     for (const item of carrito) {
       const promoProd = promosActivas.find(p => p.tipo_aplicacion === 'PRODUCTO' && p.producto_id === item.id)
       if (promoProd) {
@@ -429,6 +486,7 @@ export default function App() {
         const ahorro = Math.max(0, precioNormal - totalConPromo)
         if (ahorro > 0) {
           descuentoPromociones += ahorro
+          descuentosPorItemId[item.id] = (descuentosPorItemId[item.id] || 0) + ahorro
           detallePromosAplicadas.push({
             nombre: `${promoProd.nombre}: ${paquetesAplicados.join(' + ')}`,
             ahorro
@@ -438,6 +496,7 @@ export default function App() {
       }
     }
 
+    // 2. Promociones por CATEGORÍA
     const promosCategoria = promosActivas.filter(p => p.tipo_aplicacion === 'CATEGORIA')
     for (const promoCat of promosCategoria) {
       const itemsCat = carrito.filter(i => i.categoria === promoCat.categoria && !itemsYaProcesados.has(i.id))
@@ -454,6 +513,10 @@ export default function App() {
         const ahorro = Math.max(0, precioNormalCat - totalConPromo)
         if (ahorro > 0) {
           descuentoPromociones += ahorro
+          itemsCat.forEach(i => {
+            const pesoItem = precioNormalCat > 0 ? ((Number(i.precio_publico) * i.qty) / precioNormalCat) : (1 / itemsCat.length)
+            descuentosPorItemId[i.id] = (descuentosPorItemId[i.id] || 0) + (ahorro * pesoItem)
+          })
           detallePromosAplicadas.push({
             nombre: `${promoCat.nombre} (${promoCat.categoria}): ${paquetesAplicados.join(' + ')}`,
             ahorro
@@ -463,13 +526,15 @@ export default function App() {
       }
     }
 
-    const descuentoTotal = descuentoPromociones + Number(descuentoManual || 0)
+    const descManualNum = Number(descuentoManual || 0)
+    const descuentoTotal = descuentoPromociones + descManualNum
     const totalFinal = Math.max(0, subtotalSinPromo - descuentoTotal)
     const gananciaNeta = totalFinal - costoTotal
 
     return {
       subtotalSinPromo,
       descuentoPromociones,
+      descuentosPorItemId,
       detallePromosAplicadas,
       descuentoTotal,
       totalFinal,
@@ -481,22 +546,37 @@ export default function App() {
     ? Number(montoRecibido) - calculoCarrito.totalFinal
     : 0
 
-  // --- COBRAR VENTA (SOPORTA MODO ONLINE Y OFFLINE EN EL MALECÓN) ---
   async function cobrarVenta() {
     if (carrito.length === 0) return
     setProcesandoVenta(true)
 
-    const itemsVendidos = carrito.map(item => ({
-      id: item.id,
-      codigo: item.codigo,
-      nombre_producto: item.nombre_producto,
-      categoria: item.categoria,
-      tematica: item.tematica || '',
-      precio_unitario: Number(item.precio_publico),
-      costo_unitario: Number(item.costo_produccion || 0),
-      qty: item.qty,
-      subtotal: Number(item.precio_publico) * item.qty
-    }))
+    const descManualNum = Number(descuentoManual || 0)
+    const subtotalPostPromo = Math.max(0, calculoCarrito.subtotalSinPromo - calculoCarrito.descuentoPromociones)
+
+    const itemsVendidos = carrito.map(item => {
+      const subtotalBruto = Number(item.precio_publico) * item.qty
+      const descPromoItem = calculoCarrito.descuentosPorItemId[item.id] || 0
+      const netoTrasPromo = Math.max(0, subtotalBruto - descPromoItem)
+      const descManualItem = subtotalPostPromo > 0 ? (descManualNum * (netoTrasPromo / subtotalPostPromo)) : 0
+      const descuentoTotalItem = descPromoItem + descManualItem
+      const ingresoRealItem = Math.max(0, subtotalBruto - descuentoTotalItem)
+      const costoTotalItem = Number(item.costo_produccion || 0) * item.qty
+
+      return {
+        id: item.id,
+        codigo: item.codigo,
+        nombre_producto: item.nombre_producto,
+        categoria: item.categoria,
+        tematica: item.tematica || '',
+        precio_unitario: Number(item.precio_publico),
+        costo_unitario: Number(item.costo_produccion || 0),
+        qty: item.qty,
+        subtotal: subtotalBruto,
+        descuento_item: Number(descuentoTotalItem.toFixed(2)),
+        ingreso_real: Number(ingresoRealItem.toFixed(2)),
+        ganancia_real: Number((ingresoRealItem - costoTotalItem).toFixed(2))
+      }
+    })
 
     const payloadVenta = {
       id: crypto.randomUUID(),
@@ -514,7 +594,6 @@ export default function App() {
       qtyVendida: item.qty
     }))
 
-    // Función para guardar la venta localmente si no hay internet o si falla la señal
     function guardarVentaModoOffline() {
       const productosActualizados = productos.map(p => {
         const vendido = carrito.find(c => c.id === p.id)
@@ -632,7 +711,7 @@ export default function App() {
     }
   }
 
-  // --- GESTIÓN DE PEDIDOS POR ENCARGO Y CONTABILIZACIÓN EN TICKETS/CORTES ---
+  // --- GESTIÓN DE PEDIDOS POR ENCARGO ---
   async function crearPedido(e) {
     e.preventDefault()
     if (!nuevoPedido.cliente || !nuevoPedido.descripcion_pedido || !nuevoPedido.fecha_entrega || !nuevoPedido.precio_acordado) {
@@ -657,7 +736,7 @@ export default function App() {
       setPedidos(actualizados)
       guardarCacheLocal(STORAGE_KEYS.PEDIDOS, actualizados)
       encolarAccionOffline({ tipo: 'CREAR_PEDIDO', payload: payloadPedido })
-      alert('¡Pedido guardado en memoria interna (Modo Offline)! Se sincronizará al tener internet.')
+      alert('¡Pedido guardado en memoria interna (Modo Offline)!')
       setNuevoPedido({
         cliente: '', telefono: '', descripcion_pedido: '', fecha_entrega: '',
         costo_produccion: '', precio_acordado: '', anticipo: ''
@@ -685,7 +764,6 @@ export default function App() {
     }
   }
 
-  // Entregar Pedido -> Pasa a ENTREGADO y genera automáticamente su Ticket en Ventas y Finanzas
   async function completarYContabilizarPedido(pedido) {
     const metodoElegido = metodoPagoPedidos[pedido.id] || 'Efectivo'
     const precioTotal = Number(pedido.precio_acordado || 0)
@@ -693,7 +771,7 @@ export default function App() {
     const gananciaNeta = precioTotal - costoTotal
 
     const confirmar = window.confirm(
-      `¿Marcar como ENTREGADO el pedido de ${pedido.cliente} y contabilizar $${precioTotal.toFixed(2)} (${metodoElegido}) en Tickets y Corte de Caja?`
+      `¿Marcar como ENTREGADO el pedido de ${pedido.cliente} y contabilizar $${precioTotal.toFixed(2)} (${metodoElegido}) en Tickets y Finanzas?`
     )
     if (!confirmar) return
 
@@ -707,6 +785,9 @@ export default function App() {
       costo_unitario: costoTotal,
       qty: 1,
       subtotal: precioTotal,
+      descuento_item: 0,
+      ingreso_real: precioTotal,
+      ganancia_real: gananciaNeta,
       es_pedido: true
     }]
 
@@ -796,7 +877,222 @@ export default function App() {
     else recargarDatos()
   }
 
-  // --- EDICIÓN Y CREACIÓN DE PRODUCTOS (CON SOPORTE OFFLINE) ---
+  // --- GESTIÓN DEL MÓDULO DE FINANZAS (FONDOS, ABONOS, EXTRACCIONES, INGRESOS Y EGRESOS) ---
+  async function crearFondoFinanciero(e) {
+    e.preventDefault()
+    if (!nuevoFondo.nombre) return alert('Escribe un nombre para el fondo o cuenta.')
+
+    const payloadFondo = {
+      id: crypto.randomUUID(),
+      nombre: nuevoFondo.nombre,
+      area: nuevoFondo.area,
+      tipo: nuevoFondo.tipo,
+      saldo: Number(nuevoFondo.saldo || 0),
+      meta: Number(nuevoFondo.meta || 0),
+      created_at: new Date().toISOString()
+    }
+
+    function guardarFondoOffline() {
+      const actualizados = [...fondos, payloadFondo]
+      setFondos(actualizados)
+      guardarCacheLocal(STORAGE_KEYS.FONDOS, actualizados)
+      encolarAccionOffline({ tipo: 'CREAR_FONDO', payload: payloadFondo })
+      setNuevoFondo({ nombre: '', area: 'JOYERIA', tipo: 'FONDO', saldo: '', meta: '' })
+      setMostrarFormNuevoFondo(false)
+    }
+
+    if (!navigator.onLine) {
+      guardarFondoOffline()
+      return
+    }
+
+    const { error } = await supabase.from('finanzas_fondos').insert([payloadFondo])
+    if (error) {
+      guardarFondoOffline()
+    } else {
+      setNuevoFondo({ nombre: '', area: 'JOYERIA', tipo: 'FONDO', saldo: '', meta: '' })
+      setMostrarFormNuevoFondo(false)
+      recargarDatos()
+    }
+  }
+
+  async function ejecutarAccionRapidaFondo(e) {
+    e.preventDefault()
+    if (!modalFondoAccion || !montoAccionFondo || Number(montoAccionFondo) <= 0) {
+      return alert('Ingresa un monto válido mayor a 0.')
+    }
+
+    const { fondo, operacion } = modalFondoAccion
+    const montoNum = Number(montoAccionFondo)
+    const saldoActual = Number(fondo.saldo || 0)
+
+    // Si es FONDO: Abonar suma al fondo, Retirar resta del fondo.
+    // Si es DEUDA: Abonar reduce la deuda (o si se registra un cargo con Extraer, sube la deuda).
+    const nuevoSaldo = operacion === 'ABONO_FONDO'
+      ? (fondo.tipo === 'DEUDA' ? Math.max(0, saldoActual - montoNum) : saldoActual + montoNum)
+      : (fondo.tipo === 'DEUDA' ? saldoActual + montoNum : Math.max(0, saldoActual - montoNum))
+
+    const payloadMov = {
+      id: crypto.randomUUID(),
+      area: fondo.area || 'GENERAL',
+      tipo: operacion,
+      fondo_id: fondo.id,
+      fondo_nombre: fondo.nombre,
+      concepto: conceptoAccionFondo.trim() || (
+        operacion === 'ABONO_FONDO'
+          ? (fondo.tipo === 'DEUDA' ? `Abono a deuda: ${fondo.nombre}` : `Abono a ${fondo.nombre}`)
+          : (fondo.tipo === 'DEUDA' ? `Nuevo cargo a: ${fondo.nombre}` : `Retiro / Uso de ${fondo.nombre}`)
+      ),
+      monto: montoNum,
+      metodo_pago: 'Efectivo',
+      created_at: new Date().toISOString()
+    }
+
+    function aplicarOffline() {
+      const fondosActualizados = fondos.map(f => f.id === fondo.id ? { ...f, saldo: nuevoSaldo } : f)
+      setFondos(fondosActualizados)
+      guardarCacheLocal(STORAGE_KEYS.FONDOS, fondosActualizados)
+
+      const movsActualizados = [payloadMov, ...movimientos]
+      setMovimientos(movsActualizados)
+      guardarCacheLocal(STORAGE_KEYS.MOVIMIENTOS, movsActualizados)
+
+      encolarAccionOffline({
+        tipo: 'MOVIMIENTO_FINANCIERO',
+        payload: { movimiento: payloadMov, fondoId: fondo.id, nuevoSaldo }
+      })
+
+      setModalFondoAccion(null)
+      setMontoAccionFondo('')
+      setConceptoAccionFondo('')
+    }
+
+    if (!navigator.onLine) {
+      aplicarOffline()
+      return
+    }
+
+    try {
+      const { error: errMov } = await supabase.from('finanzas_movimientos').insert([payloadMov])
+      if (errMov) throw errMov
+
+      const { error: errFondo } = await supabase
+        .from('finanzas_fondos')
+        .update({ saldo: nuevoSaldo })
+        .eq('id', fondo.id)
+      if (errFondo) throw errFondo
+
+      setModalFondoAccion(null)
+      setMontoAccionFondo('')
+      setConceptoAccionFondo('')
+      await recargarDatos()
+    } catch (err) {
+      console.warn('Guardando movimiento de fondo en modo offline:', err)
+      aplicarOffline()
+    }
+  }
+
+  async function registrarMovimientoGeneral(e) {
+    e.preventDefault()
+    const montoNum = Number(nuevoMovimiento.monto)
+    if (!nuevoMovimiento.concepto || !montoNum || montoNum <= 0) {
+      return alert('Completa el concepto y un monto válido.')
+    }
+
+    let fondoObj = null
+    let nuevoSaldoFondo = undefined
+
+    if (nuevoMovimiento.tipo === 'ABONO_FONDO' || nuevoMovimiento.tipo === 'RETIRO_FONDO') {
+      if (!nuevoMovimiento.fondo_id) return alert('Selecciona el fondo al que deseas abonar o retirar.')
+      fondoObj = fondos.find(f => f.id === nuevoMovimiento.fondo_id)
+      if (fondoObj) {
+        const saldoAct = Number(fondoObj.saldo || 0)
+        nuevoSaldoFondo = nuevoMovimiento.tipo === 'ABONO_FONDO'
+          ? (fondoObj.tipo === 'DEUDA' ? Math.max(0, saldoAct - montoNum) : saldoAct + montoNum)
+          : (fondoObj.tipo === 'DEUDA' ? saldoAct + montoNum : Math.max(0, saldoAct - montoNum))
+      }
+    }
+
+    const payloadMov = {
+      id: crypto.randomUUID(),
+      area: nuevoMovimiento.area,
+      tipo: nuevoMovimiento.tipo,
+      fondo_id: fondoObj ? fondoObj.id : null,
+      fondo_nombre: fondoObj ? fondoObj.nombre : null,
+      concepto: nuevoMovimiento.concepto,
+      monto: montoNum,
+      metodo_pago: nuevoMovimiento.metodo_pago,
+      created_at: new Date().toISOString()
+    }
+
+    function guardarMovOffline() {
+      if (fondoObj && nuevoSaldoFondo !== undefined) {
+        const fondosAct = fondos.map(f => f.id === fondoObj.id ? { ...f, saldo: nuevoSaldoFondo } : f)
+        setFondos(fondosAct)
+        guardarCacheLocal(STORAGE_KEYS.FONDOS, fondosAct)
+      }
+      const movsAct = [payloadMov, ...movimientos]
+      setMovimientos(movsAct)
+      guardarCacheLocal(STORAGE_KEYS.MOVIMIENTOS, movsAct)
+
+      encolarAccionOffline({
+        tipo: 'MOVIMIENTO_FINANCIERO',
+        payload: { movimiento: payloadMov, fondoId: fondoObj?.id, nuevoSaldo: nuevoSaldoFondo }
+      })
+
+      setNuevoMovimiento({
+        area: 'JOYERIA', tipo: 'EGRESO', fondo_id: '', concepto: '', monto: '', metodo_pago: 'Efectivo'
+      })
+    }
+
+    if (!navigator.onLine) {
+      guardarMovOffline()
+      return
+    }
+
+    try {
+      const { error: errMov } = await supabase.from('finanzas_movimientos').insert([payloadMov])
+      if (errMov) throw errMov
+
+      if (fondoObj && nuevoSaldoFondo !== undefined) {
+        await supabase.from('finanzas_fondos').update({ saldo: nuevoSaldoFondo }).eq('id', fondoObj.id)
+      }
+
+      setNuevoMovimiento({
+        area: 'JOYERIA', tipo: 'EGRESO', fondo_id: '', concepto: '', monto: '', metodo_pago: 'Efectivo'
+      })
+      await recargarDatos()
+    } catch (err) {
+      console.warn('Guardando movimiento en modo offline:', err)
+      guardarMovOffline()
+    }
+  }
+
+  async function eliminarMovimientoFinanciero(mov) {
+    if (!navigator.onLine) return alert('Necesitas conexión a internet para eliminar un registro financiero.')
+    if (!window.confirm(`¿Eliminar el registro "${mov.concepto}" por $${mov.monto}?`)) return
+
+    try {
+      if (mov.fondo_id) {
+        const fondoObj = fondos.find(f => f.id === mov.fondo_id)
+        if (fondoObj) {
+          const saldoAct = Number(fondoObj.saldo || 0)
+          const montoNum = Number(mov.monto || 0)
+          const saldoRevertido = mov.tipo === 'ABONO_FONDO'
+            ? (fondoObj.tipo === 'DEUDA' ? saldoAct + montoNum : Math.max(0, saldoAct - montoNum))
+            : (fondoObj.tipo === 'DEUDA' ? Math.max(0, saldoAct - montoNum) : saldoAct + montoNum)
+
+          await supabase.from('finanzas_fondos').update({ saldo: saldoRevertido }).eq('id', fondoObj.id)
+        }
+      }
+      await supabase.from('finanzas_movimientos').delete().eq('id', mov.id)
+      await recargarDatos()
+    } catch (err) {
+      alert('Error al eliminar movimiento: ' + err.message)
+    }
+  }
+
+  // --- EDICIÓN Y CREACIÓN DE PRODUCTOS ---
   function iniciarEdicion(prod) {
     setEditandoId(prod.id)
     setFormEdicion({ ...prod, tematica: prod.tematica || '' })
@@ -874,7 +1170,7 @@ export default function App() {
       setProductos(actualizados)
       guardarCacheLocal(STORAGE_KEYS.PRODUCTOS, actualizados)
       encolarAccionOffline({ tipo: 'CREAR_PRODUCTO', payload: payloadProd })
-      alert('¡Producto guardado en la tablet (Modo Offline)! Se subirá a la nube al conectar a internet.')
+      alert('¡Producto guardado en la tablet (Modo Offline)!')
       setNuevoProd({
         codigo: '', nombre_producto: '', categoria: 'CADENAS-COLLARES', tematica: '',
         cantidad: 1, costo_produccion: '', precio_publico: '', imagen_url: ''
@@ -1018,11 +1314,14 @@ export default function App() {
 
   const listaCortes = Object.values(cortesPorDia)
 
-  const analiticas = (() => {
+  // --- MOTOR UNIFICADO DE ANALÍTICAS REALES Y FINANZAS SEPARADAS (JOYERÍA VS GALLETAS) ---
+  const { analiticas, resumenFinanzas } = (() => {
     const mapaProductos = {}
     const mapaCategorias = {}
+    const lookupCategoriaProd = {}
 
     productos.forEach(p => {
+      lookupCategoriaProd[p.id] = p.categoria
       mapaProductos[p.id] = {
         id: p.id,
         nombre: p.nombre_producto,
@@ -1033,46 +1332,134 @@ export default function App() {
         precioPublico: Number(p.precio_publico || 0),
         unidadesVendidas: 0,
         ingresosBrutos: 0,
-        gananciaEstimada: 0
+        descuentosAplicados: 0,
+        ingresosReales: 0,
+        costoVendido: 0,
+        gananciaReal: 0
       }
     })
 
+    let ventasBrutasTotales = 0
+    let descuentosTotales = 0
+    let ventasRealesTotales = 0
+    let gananciaNetaTotalVentas = 0
+
+    // Contadores separados para Joyería vs Repostería/Galletas
+    const statsJoyeria = { ventasReales: 0, costoRecuperado: 0, gananciaVentas: 0, descuentos: 0, piezas: 0 }
+    const statsGalletas = { ventasReales: 0, costoRecuperado: 0, gananciaVentas: 0, descuentos: 0, piezas: 0 }
+
     ventas.forEach(v => {
-      ;(v.items || []).forEach(item => {
+      const itemsTicket = v.items || []
+      const sumaBrutaItems = itemsTicket.reduce((acc, it) => acc + Number(it.subtotal || (Number(it.precio_unitario || 0) * Number(it.qty || 0))), 0)
+      const totalCobradoTicket = Number(v.total || 0)
+      // Factor exacto para prorratear promociones (2x$40, 3x$50) y descuentos en cada artículo
+      const factorRealTicket = sumaBrutaItems > 0 ? (totalCobradoTicket / sumaBrutaItems) : 1
+
+      itemsTicket.forEach(item => {
         const cant = Number(item.qty || 0)
-        const sub = Number(item.subtotal || 0)
-        const costo = Number(item.costo_unitario || 0) * cant
-        const util = sub - costo
+        const brutoItem = Number(item.subtotal || (Number(item.precio_unitario || 0) * cant))
+        
+        // Si el ticket ya trae ingreso_real guardado lo usamos, si es venta anterior lo calculamos con factorRealTicket
+        const realItem = item.ingreso_real !== undefined
+          ? Number(item.ingreso_real)
+          : (brutoItem * factorRealTicket)
+        const descItem = Math.max(0, brutoItem - realItem)
+        const costoItem = Number(item.costo_unitario || 0) * cant
+        const utilidadRealItem = realItem - costoItem
+
+        const catItem = item.categoria || lookupCategoriaProd[item.id] || (item.es_pedido ? 'PEDIDOS ESPECIALES' : 'CADENAS-COLLARES')
+        const esGalleta = catItem === 'REPOSTERÍA' || (item.nombre_producto && item.nombre_producto.toLowerCase().includes('galleta'))
+        const catFinal = esGalleta ? 'REPOSTERÍA' : catItem
 
         if (!mapaProductos[item.id]) {
           mapaProductos[item.id] = {
             id: item.id,
             nombre: item.nombre_producto,
-            categoria: item.categoria || 'PEDIDOS ESPECIALES',
+            categoria: catFinal,
             tematica: item.tematica || '',
             stockActual: 0,
             costoUnitario: Number(item.costo_unitario || 0),
             precioPublico: Number(item.precio_unitario || 0),
             unidadesVendidas: 0,
             ingresosBrutos: 0,
-            gananciaEstimada: 0,
+            descuentosAplicados: 0,
+            ingresosReales: 0,
+            costoVendido: 0,
+            gananciaReal: 0,
             esPedido: Boolean(item.es_pedido)
           }
         }
 
         mapaProductos[item.id].unidadesVendidas += cant
-        mapaProductos[item.id].ingresosBrutos += sub
-        mapaProductos[item.id].gananciaEstimada += util
+        mapaProductos[item.id].ingresosBrutos += brutoItem
+        mapaProductos[item.id].descuentosAplicados += descItem
+        mapaProductos[item.id].ingresosReales += realItem
+        mapaProductos[item.id].costoVendido += costoItem
+        mapaProductos[item.id].gananciaReal += utilidadRealItem
 
-        const catKey = mapaProductos[item.id].categoria || 'SIN CATEGORÍA'
-        if (!mapaCategorias[catKey]) {
-          mapaCategorias[catKey] = { categoria: catKey, unidades: 0, ingresos: 0, ganancia: 0 }
+        if (!mapaCategorias[catFinal]) {
+          mapaCategorias[catFinal] = {
+            categoria: catFinal,
+            unidades: 0,
+            ingresosBrutos: 0,
+            descuentos: 0,
+            ingresosReales: 0,
+            costoTotal: 0,
+            gananciaReal: 0
+          }
         }
-        mapaCategorias[catKey].unidades += cant
-        mapaCategorias[catKey].ingresos += sub
-        mapaCategorias[catKey].ganancia += util
+        mapaCategorias[catFinal].unidades += cant
+        mapaCategorias[catFinal].ingresosBrutos += brutoItem
+        mapaCategorias[catFinal].descuentos += descItem
+        mapaCategorias[catFinal].ingresosReales += realItem
+        mapaCategorias[catFinal].costoTotal += costoItem
+        mapaCategorias[catFinal].gananciaReal += utilidadRealItem
+
+        ventasBrutasTotales += brutoItem
+        descuentosTotales += descItem
+        ventasRealesTotales += realItem
+        gananciaNetaTotalVentas += utilidadRealItem
+
+        if (esGalleta) {
+          statsGalletas.ventasReales += realItem
+          statsGalletas.costoRecuperado += costoItem
+          statsGalletas.gananciaVentas += utilidadRealItem
+          statsGalletas.descuentos += descItem
+          statsGalletas.piezas += cant
+        } else {
+          statsJoyeria.ventasReales += realItem
+          statsJoyeria.costoRecuperado += costoItem
+          statsJoyeria.gananciaVentas += utilidadRealItem
+          statsJoyeria.descuentos += descItem
+          statsJoyeria.piezas += cant
+        }
       })
     })
+
+    // Sumar movimientos financieros manuales (Ingresos extra, Egresos de insumos, Abonos a fondos)
+    let ingresosExtraJoyeria = 0
+    let egresosJoyeria = 0
+    let ingresosExtraGalletas = 0
+    let egresosGalletas = 0
+
+    movimientos.forEach(m => {
+      const monto = Number(m.monto || 0)
+      if (m.area === 'JOYERIA') {
+        if (m.tipo === 'INGRESO') ingresosExtraJoyeria += monto
+        if (m.tipo === 'EGRESO') egresosJoyeria += monto
+      } else if (m.area === 'GALLETAS') {
+        if (m.tipo === 'INGRESO') ingresosExtraGalletas += monto
+        if (m.tipo === 'EGRESO') egresosGalletas += monto
+      }
+    })
+
+    const totalEnFondosAhorro = fondos
+      .filter(f => f.tipo !== 'DEUDA')
+      .reduce((acc, f) => acc + Number(f.saldo || 0), 0)
+
+    const totalDeudasPendientes = fondos
+      .filter(f => f.tipo === 'DEUDA')
+      .reduce((acc, f) => acc + Number(f.saldo || 0), 0)
 
     const listaProds = Object.values(mapaProductos)
     const topMasVendidos = [...listaProds]
@@ -1080,26 +1467,56 @@ export default function App() {
       .sort((a, b) => b.unidadesVendidas - a.unidadesVendidas)
       .slice(0, 10)
 
+    const topMasRentables = [...listaProds]
+      .filter(p => p.gananciaReal > 0 && !p.esPedido)
+      .sort((a, b) => b.gananciaReal - a.gananciaReal)
+      .slice(0, 10)
+
     const urgenteResurtir = [...listaProds]
       .filter(p => p.unidadesVendidas > 0 && p.stockActual <= 1 && !p.esPedido)
-      .sort((a, b) => b.unidadesVendidas - a.unidadesVendidas)
+      .sort((a, b) => b.gananciaReal - a.gananciaReal)
 
     const huesoSinRotacion = [...listaProds]
       .filter(p => p.unidadesVendidas === 0 && p.stockActual >= 2 && !p.esPedido)
       .sort((a, b) => b.stockActual - a.stockActual)
 
-    const resumenCategorias = Object.values(mapaCategorias).sort((a, b) => b.ganancia - a.ganancia)
+    const resumenCategorias = Object.values(mapaCategorias).sort((a, b) => b.gananciaReal - a.gananciaReal)
 
     const valorInventarioCosto = productos.reduce((sum, p) => sum + (Number(p.costo_produccion || 0) * Math.max(0, Number(p.cantidad || 0))), 0)
     const valorInventarioVenta = productos.reduce((sum, p) => sum + (Number(p.precio_publico || 0) * Math.max(0, Number(p.cantidad || 0))), 0)
 
     return {
-      topMasVendidos,
-      urgenteResurtir,
-      huesoSinRotacion,
-      resumenCategorias,
-      valorInventarioCosto,
-      valorInventarioVenta
+      analiticas: {
+        ventasBrutasTotales,
+        descuentosTotales,
+        ventasRealesTotales,
+        gananciaNetaTotalVentas,
+        topMasVendidos,
+        topMasRentables,
+        urgenteResurtir,
+        huesoSinRotacion,
+        resumenCategorias,
+        valorInventarioCosto,
+        valorInventarioVenta
+      },
+      resumenFinanzas: {
+        joyeria: {
+          ...statsJoyeria,
+          ingresosExtra: ingresosExtraJoyeria,
+          egresos: egresosJoyeria,
+          flujoNetoTotal: statsJoyeria.ventasReales + ingresosExtraJoyeria - egresosJoyeria,
+          utilidadLibre: statsJoyeria.gananciaVentas + ingresosExtraJoyeria - egresosJoyeria
+        },
+        galletas: {
+          ...statsGalletas,
+          ingresosExtra: ingresosExtraGalletas,
+          egresos: egresosGalletas,
+          flujoNetoTotal: statsGalletas.ventasReales + ingresosExtraGalletas - egresosGalletas,
+          utilidadLibre: statsGalletas.gananciaVentas + ingresosExtraGalletas - egresosGalletas
+        },
+        totalEnFondosAhorro,
+        totalDeudasPendientes
+      }
     }
   })()
 
@@ -1114,6 +1531,10 @@ export default function App() {
     return promo.reglas.map(r => `${r.cantidad}x$${r.precio_total}`).join(' • ')
   }
 
+  const movimientosFiltrados = movimientos.filter(
+    m => filtroAreaFinanzas === 'TODAS' || m.area === filtroAreaFinanzas
+  )
+
   return (
     <div className="flex h-screen overflow-hidden bg-destellos-pink">
       
@@ -1126,11 +1547,11 @@ export default function App() {
             </div>
             <div className="hidden md:block">
               <h1 className="font-bold text-base leading-tight text-destellos-dark">Destellos de Oro</h1>
-              <span className="text-xs text-destellos-gold font-medium">Punto de Venta</span>
+              <span className="text-xs text-destellos-gold font-medium">POS & Finanzas</span>
             </div>
           </div>
 
-          <nav className="p-2 space-y-1 mt-2">
+          <nav className="p-2 space-y-1 mt-1">
             <button
               onClick={() => setVistaActiva('ventas')}
               className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
@@ -1179,7 +1600,7 @@ export default function App() {
               <span className="hidden md:inline text-sm">Promociones</span>
             </button>
 
-            <div className="pt-2 my-2 border-t border-pink-100 space-y-1">
+            <div className="pt-1.5 my-1.5 border-t border-pink-100 space-y-1">
               <button
                 onClick={() => setVistaActiva('calendario')}
                 className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
@@ -1202,6 +1623,20 @@ export default function App() {
               >
                 <ClipboardList size={19} />
                 <span className="hidden md:inline text-sm">Registrar Pedido</span>
+              </button>
+            </div>
+
+            <div className="pt-1.5 my-1.5 border-t border-pink-100 space-y-1">
+              <button
+                onClick={() => setVistaActiva('finanzas')}
+                className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                  vistaActiva === 'finanzas' 
+                    ? 'bg-purple-800 text-white shadow-sm font-semibold' 
+                    : 'text-purple-900 bg-purple-50/60 hover:bg-purple-100'
+                }`}
+              >
+                <Wallet size={19} />
+                <span className="hidden md:inline text-sm">Finanzas y Fondos</span>
               </button>
 
               <button
@@ -1243,7 +1678,6 @@ export default function App() {
           </nav>
         </div>
 
-        {/* ESTADO DE CONEXIÓN Y COLA OFFLINE EN EL MALECÓN */}
         <div className="p-2.5 border-t border-pink-100 space-y-2">
           <div className={`p-2 rounded-xl text-xs font-bold flex items-center justify-center md:justify-start gap-2 ${
             esOnline ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-amber-50 text-amber-900 border border-amber-200'
@@ -1282,7 +1716,6 @@ export default function App() {
         {vistaActiva === 'ventas' && (
           <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
             
-            {/* IZQUIERDA: CARRITO / TICKET EN CURSO */}
             <div className="w-full md:w-5/12 lg:w-4/12 bg-white border-r border-pink-100 flex flex-col h-full shadow-sm">
               <div className="p-3.5 border-b border-pink-100 flex justify-between items-center bg-pink-50/40">
                 <h2 className="font-bold text-base text-gray-800">Ticket en Curso</h2>
@@ -1439,7 +1872,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* DERECHA: CATÁLOGO DE PRODUCTOS */}
             <div className="flex-1 flex flex-col h-full overflow-hidden p-4">
               <div className="space-y-2.5 mb-3">
                 <div className="flex gap-2">
@@ -1447,7 +1879,7 @@ export default function App() {
                     <Search className="absolute left-3.5 top-3 text-gray-400" size={18} />
                     <input
                       type="text"
-                      placeholder="Buscar por nombre, código o temática (ej. gatitos, hora de aventura)..."
+                      placeholder="Buscar por nombre, código o temática (ej. galletas, gatitos)..."
                       value={busqueda}
                       onChange={e => setBusqueda(e.target.value)}
                       className="w-full pl-10 pr-4 py-2 bg-white border border-pink-200 rounded-xl text-sm shadow-xs focus:outline-none focus:ring-2 focus:ring-purple-200"
@@ -1480,7 +1912,7 @@ export default function App() {
                           : 'bg-white text-gray-600 border border-pink-200 hover:bg-pink-50'
                       }`}
                     >
-                      {cat}
+                      {cat === 'REPOSTERÍA' ? '🍪 REPOSTERÍA' : cat}
                     </button>
                   ))}
                 </div>
@@ -1534,7 +1966,9 @@ export default function App() {
                       >
                         <div>
                           <div className="flex justify-between items-start gap-1 mb-1">
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-pink-50 text-purple-800">
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                              prod.categoria === 'REPOSTERÍA' ? 'bg-amber-100 text-amber-900' : 'bg-pink-50 text-purple-800'
+                            }`}>
                               {prod.codigo || prod.categoria.slice(0, 6)}
                             </span>
                             {prod.imagen_url && (
@@ -1605,7 +2039,7 @@ export default function App() {
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
               <div>
                 <h2 className="text-2xl font-bold text-gray-800">Control de Inventario</h2>
-                <p className="text-xs text-gray-500">Modifica precios, existencias, temáticas de pines o fotos para Jazmín</p>
+                <p className="text-xs text-gray-500">Modifica precios, existencias, categorías (Joyería / Repostería) o fotos</p>
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -1649,7 +2083,7 @@ export default function App() {
                     <th className="p-3 text-center">Stock</th>
                     <th className="p-3 text-right">Costo</th>
                     <th className="p-3 text-right">Precio</th>
-                    <th className="p-3 text-right">Ganancia</th>
+                    <th className="p-3 text-right">Ganancia Base</th>
                     <th className="p-3 text-center">Foto</th>
                     <th className="p-3 text-center">Acciones</th>
                   </tr>
@@ -1706,7 +2140,9 @@ export default function App() {
                               </div>
                             ) : (
                               <div className="flex flex-wrap items-center gap-1">
-                                <span className="px-2 py-0.5 rounded-full bg-purple-50 text-purple-800 font-semibold">
+                                <span className={`px-2 py-0.5 rounded-full font-semibold ${
+                                  prod.categoria === 'REPOSTERÍA' ? 'bg-amber-100 text-amber-900' : 'bg-purple-50 text-purple-800'
+                                }`}>
                                   {prod.categoria}
                                 </span>
                                 {prod.tematica && (
@@ -1893,7 +2329,7 @@ export default function App() {
                   <label className="block text-xs font-bold text-gray-600 mb-1">Código / ID (Opcional)</label>
                   <input
                     type="text"
-                    placeholder="Ej. PIN-01"
+                    placeholder="Ej. PIN-01 o GALL-01"
                     value={nuevoProd.codigo}
                     onChange={e => setNuevoProd({...nuevoProd, codigo: e.target.value})}
                     className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm"
@@ -1942,7 +2378,7 @@ export default function App() {
                 <input
                   type="text"
                   required
-                  placeholder="Ej. Pin BMO Hora de Aventura / Cadenita mariposa"
+                  placeholder="Ej. Galletas de mantequilla con mermelada / Cadenita mariposa"
                   value={nuevoProd.nombre_producto}
                   onChange={e => setNuevoProd({...nuevoProd, nombre_producto: e.target.value})}
                   className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm"
@@ -2053,7 +2489,7 @@ export default function App() {
             <div className="mb-4">
               <h2 className="text-2xl font-bold text-gray-800">Promociones Automáticas</h2>
               <p className="text-xs text-gray-500">
-                Configura ofertas como 2x$40 o 3x$50. El carrito calculará el descuento automáticamente al agregar los artículos.
+                Configura ofertas como 2x$40 o 3x$50. El carrito y las analíticas descontarán automáticamente el ajuste de promoción.
               </p>
             </div>
 
@@ -2488,7 +2924,438 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== MÓDULO 7: TICKETS ==================== */}
+        {/* ==================== MÓDULO 7: FINANZAS, BILLETERAS Y FONDOS ==================== */}
+        {vistaActiva === 'finanzas' && (
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-800">Centro Financiero y Fondos</h2>
+                <p className="text-xs text-gray-500">
+                  Control separado de Joyería y Repostería (Galletas), fondos de reinversión (Nihao, Shein, Caja) y egresos.
+                </p>
+              </div>
+              <button
+                onClick={() => setMostrarFormNuevoFondo(!mostrarFormNuevoFondo)}
+                className="px-4 py-2 bg-purple-800 hover:bg-purple-900 text-white rounded-xl text-xs font-bold cursor-pointer self-start sm:self-auto"
+              >
+                {mostrarFormNuevoFondo ? 'Cerrar Formulario de Fondo' : '+ Crear Nuevo Fondo / Cuenta'}
+              </button>
+            </div>
+
+            {/* 1. BILLETERAS SEPARADAS: JOYERÍA VS GALLETAS */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              {/* Billetera Joyería (Destellos de Oro) */}
+              <div className="bg-white p-5 rounded-2xl border border-purple-200 shadow-2xs space-y-3">
+                <div className="flex items-center justify-between border-b border-purple-100 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-xl bg-purple-100 text-purple-800 flex items-center justify-center">
+                      <Gem size={20} />
+                    </div>
+                    <div>
+                      <h3 className="font-extrabold text-base text-gray-800">Joyería (Destellos de Oro)</h3>
+                      <span className="text-xs text-gray-500">{resumenFinanzas.joyeria.piezas} piezas/encargos vendidos</span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[11px] font-bold uppercase text-purple-700 block">Utilidad Neta Libre</span>
+                    <span className="text-2xl font-extrabold text-purple-950">
+                      ${resumenFinanzas.joyeria.utilidadLibre.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                  <div className="p-2.5 rounded-xl bg-purple-50/60">
+                    <span className="text-gray-500 block">Ventas Cobradas</span>
+                    <strong className="text-sm text-gray-900">${resumenFinanzas.joyeria.ventasReales.toFixed(2)}</strong>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-gray-50">
+                    <span className="text-gray-500 block">Costo Prod. (Base)</span>
+                    <strong className="text-sm text-gray-700">${resumenFinanzas.joyeria.costoRecuperado.toFixed(2)}</strong>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-emerald-50/70">
+                    <span className="text-emerald-800 block">Ganancia Ventas</span>
+                    <strong className="text-sm text-emerald-800">${resumenFinanzas.joyeria.gananciaVentas.toFixed(2)}</strong>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-red-50/70">
+                    <span className="text-red-700 block">Gastos / Egresos</span>
+                    <strong className="text-sm text-red-700">-${resumenFinanzas.joyeria.egresos.toFixed(2)}</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Billetera Repostería (Galletas) */}
+              <div className="bg-white p-5 rounded-2xl border border-amber-200 shadow-2xs space-y-3">
+                <div className="flex items-center justify-between border-b border-amber-100 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center">
+                      <Cookie size={20} />
+                    </div>
+                    <div>
+                      <h3 className="font-extrabold text-base text-gray-800">Repostería (Venta de Galletas)</h3>
+                      <span className="text-xs text-gray-500">{resumenFinanzas.galletas.piezas} paquetes/piezas vendidos</span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[11px] font-bold uppercase text-amber-800 block">Utilidad Neta Libre</span>
+                    <span className="text-2xl font-extrabold text-amber-900">
+                      ${resumenFinanzas.galletas.utilidadLibre.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                  <div className="p-2.5 rounded-xl bg-amber-50/60">
+                    <span className="text-gray-500 block">Ventas Cobradas</span>
+                    <strong className="text-sm text-gray-900">${resumenFinanzas.galletas.ventasReales.toFixed(2)}</strong>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-gray-50">
+                    <span className="text-gray-500 block">Costo Insumos</span>
+                    <strong className="text-sm text-gray-700">${resumenFinanzas.galletas.costoRecuperado.toFixed(2)}</strong>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-emerald-50/70">
+                    <span className="text-emerald-800 block">Ganancia Ventas</span>
+                    <strong className="text-sm text-emerald-800">${resumenFinanzas.galletas.gananciaVentas.toFixed(2)}</strong>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-red-50/70">
+                    <span className="text-red-700 block">Gastos / Egresos</span>
+                    <strong className="text-sm text-red-700">-${resumenFinanzas.galletas.egresos.toFixed(2)}</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Formulario desplegable para crear un nuevo fondo */}
+            {mostrarFormNuevoFondo && (
+              <form onSubmit={crearFondoFinanciero} className="bg-white p-5 rounded-2xl border border-purple-200 shadow-xs space-y-3">
+                <h4 className="font-bold text-sm text-purple-950">Agregar Nuevo Fondo o Cuenta por Pagar</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
+                  <input
+                    type="text"
+                    required
+                    placeholder="Nombre (ej. Fondo Empaques)"
+                    value={nuevoFondo.nombre}
+                    onChange={e => setNuevoFondo({...nuevoFondo, nombre: e.target.value})}
+                    className="sm:col-span-2 px-3 py-2 border border-pink-200 rounded-xl text-xs"
+                  />
+                  <select
+                    value={nuevoFondo.area}
+                    onChange={e => setNuevoFondo({...nuevoFondo, area: e.target.value})}
+                    className="px-3 py-2 border border-pink-200 rounded-xl text-xs bg-white font-semibold"
+                  >
+                    <option value="JOYERIA">Área: Joyería</option>
+                    <option value="GALLETAS">Área: Galletas</option>
+                    <option value="GENERAL">Área: General</option>
+                  </select>
+                  <select
+                    value={nuevoFondo.tipo}
+                    onChange={e => setNuevoFondo({...nuevoFondo, tipo: e.target.value})}
+                    className="px-3 py-2 border border-pink-200 rounded-xl text-xs bg-white font-semibold"
+                  >
+                    <option value="FONDO">Fondo de Ahorro/Inversión</option>
+                    <option value="DEUDA">Deuda / Tarjeta por Pagar</option>
+                  </select>
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="Meta o Tope ($)"
+                    value={nuevoFondo.meta}
+                    onChange={e => setNuevoFondo({...nuevoFondo, meta: e.target.value})}
+                    className="px-3 py-2 border border-pink-200 rounded-xl text-xs"
+                  />
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-purple-700 text-white rounded-xl text-xs font-bold cursor-pointer"
+                  >
+                    Guardar Fondo
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* 2. BÓVEDA DE FONDOS (NIHAO, SHEIN, CAJA, GALLETAS, TARJETA) */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-base text-gray-800 flex items-center gap-2">
+                  <PiggyBank size={19} className="text-purple-700" />
+                  Bóveda de Fondos y Deudas (Abonar y Extraer)
+                </h3>
+                <div className="text-xs text-gray-500 flex gap-4">
+                  <span>Total en Fondos: <strong className="text-emerald-700">${resumenFinanzas.totalEnFondosAhorro.toFixed(2)}</strong></span>
+                  {resumenFinanzas.totalDeudasPendientes > 0 && (
+                    <span>Deuda Pendiente: <strong className="text-red-600">${resumenFinanzas.totalDeudasPendientes.toFixed(2)}</strong></span>
+                  )}
+                </div>
+              </div>
+
+              {fondos.length === 0 ? (
+                <div className="bg-white p-6 rounded-2xl border border-pink-100 text-center text-xs text-gray-400">
+                  Ejecuta el script SQL en Supabase o presiona "+ Crear Nuevo Fondo" para inicializar tus fondos (Nihao, Shein, Caja, Galletas).
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {fondos.map(fondo => {
+                    const saldo = Number(fondo.saldo || 0)
+                    const meta = Number(fondo.meta || 0)
+                    const porcentaje = meta > 0 ? Math.min(100, Math.round((saldo / meta) * 100)) : 0
+                    const esDeuda = fondo.tipo === 'DEUDA'
+
+                    return (
+                      <div
+                        key={fondo.id}
+                        className={`bg-white p-4 rounded-2xl border shadow-2xs flex flex-col justify-between space-y-3 ${
+                          esDeuda ? 'border-red-200' : 'border-pink-100'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
+                              fondo.area === 'GALLETAS' ? 'bg-amber-100 text-amber-900' :
+                              fondo.area === 'JOYERIA' ? 'bg-purple-100 text-purple-900' :
+                              'bg-gray-100 text-gray-700'
+                            }`}>
+                              {fondo.area}
+                            </span>
+                            <span className={`text-[10px] font-bold ${esDeuda ? 'text-red-600' : 'text-emerald-700'}`}>
+                              {esDeuda ? '💳 DEUDA POR LIQUIDAR' : '🏦 FONDO DISPONIBLE'}
+                            </span>
+                          </div>
+
+                          <h4 className="font-extrabold text-base text-gray-800">{fondo.nombre}</h4>
+                          <p className={`text-2xl font-extrabold mt-1 ${esDeuda ? 'text-red-700' : 'text-purple-950'}`}>
+                            ${saldo.toFixed(2)}
+                          </p>
+
+                          {meta > 0 && (
+                            <div className="mt-2 space-y-1">
+                              <div className="flex justify-between text-[11px] text-gray-500">
+                                <span>{esDeuda ? 'Tope referencia:' : 'Meta para pedido:'} ${meta.toFixed(0)}</span>
+                                <span className="font-bold">{porcentaje}%</span>
+                              </div>
+                              <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full rounded-full ${esDeuda ? 'bg-red-500' : 'bg-emerald-500'}`}
+                                  style={{ width: `${porcentaje}%` }}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-pink-50">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setModalFondoAccion({ fondo, operacion: 'ABONO_FONDO' })
+                              setMontoAccionFondo('')
+                              setConceptoAccionFondo('')
+                            }}
+                            className="py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1 cursor-pointer"
+                          >
+                            <ArrowUpCircle size={14} />
+                            {esDeuda ? 'Abonar Pago' : '+ Abonar'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setModalFondoAccion({ fondo, operacion: 'RETIRO_FONDO' })
+                              setMontoAccionFondo('')
+                              setConceptoAccionFondo('')
+                            }}
+                            className="py-2 px-3 rounded-xl bg-pink-50 hover:bg-pink-100 text-purple-950 border border-pink-200 font-bold text-xs flex items-center justify-center gap-1 cursor-pointer"
+                          >
+                            <ArrowDownCircle size={14} />
+                            {esDeuda ? '+ Subir Deuda' : '- Extraer'}
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* 3. FORMULARIO DE REGISTRO Y BITÁCORA DE MOVIMIENTOS */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              <form onSubmit={registrarMovimientoGeneral} className="lg:col-span-5 bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs space-y-3.5">
+                <h3 className="font-bold text-base text-gray-800 border-b border-pink-100 pb-2">
+                  Registrar Ingreso o Egreso Manual
+                </h3>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Área de Negocio</label>
+                    <select
+                      value={nuevoMovimiento.area}
+                      onChange={e => setNuevoMovimiento({...nuevoMovimiento, area: e.target.value})}
+                      className="w-full px-3 py-2 border border-pink-200 rounded-xl text-xs bg-white font-bold"
+                    >
+                      <option value="JOYERIA">💎 Joyería (Jazmín)</option>
+                      <option value="GALLETAS">🍪 Repostería (Galletas)</option>
+                      <option value="GENERAL">⚙️ General / Compartido</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Tipo de Operación</label>
+                    <select
+                      value={nuevoMovimiento.tipo}
+                      onChange={e => setNuevoMovimiento({...nuevoMovimiento, tipo: e.target.value})}
+                      className="w-full px-3 py-2 border border-pink-200 rounded-xl text-xs bg-white font-bold"
+                    >
+                      <option value="EGRESO">🔻 Egreso / Gasto</option>
+                      <option value="INGRESO">🔺 Ingreso Extra</option>
+                      <option value="ABONO_FONDO">🏦 Abonar a un Fondo</option>
+                      <option value="RETIRO_FONDO">💸 Extraer de un Fondo</option>
+                    </select>
+                  </div>
+                </div>
+
+                {(nuevoMovimiento.tipo === 'ABONO_FONDO' || nuevoMovimiento.tipo === 'RETIRO_FONDO') && (
+                  <div>
+                    <label className="block text-xs font-bold text-purple-900 mb-1">Selecciona el Fondo *</label>
+                    <select
+                      value={nuevoMovimiento.fondo_id}
+                      onChange={e => setNuevoMovimiento({...nuevoMovimiento, fondo_id: e.target.value})}
+                      className="w-full px-3 py-2 border border-purple-200 bg-purple-50/50 rounded-xl text-xs font-bold"
+                    >
+                      <option value="">-- Elige un fondo --</option>
+                      {fondos.map(f => (
+                        <option key={f.id} value={f.id}>
+                          {f.nombre} (Saldo actual: ${Number(f.saldo || 0).toFixed(2)})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">Concepto / Descripción *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej. Compra de mantequilla y mermelada / Pedido Nihao..."
+                    value={nuevoMovimiento.concepto}
+                    onChange={e => setNuevoMovimiento({...nuevoMovimiento, concepto: e.target.value})}
+                    className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Monto ($) *</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      required
+                      placeholder="0.00"
+                      value={nuevoMovimiento.monto}
+                      onChange={e => setNuevoMovimiento({...nuevoMovimiento, monto: e.target.value})}
+                      className="w-full px-3 py-2 border border-pink-200 rounded-xl text-sm font-bold text-purple-950"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Método</label>
+                    <select
+                      value={nuevoMovimiento.metodo_pago}
+                      onChange={e => setNuevoMovimiento({...nuevoMovimiento, metodo_pago: e.target.value})}
+                      className="w-full px-3 py-2 border border-pink-200 rounded-xl text-xs bg-white font-semibold"
+                    >
+                      <option value="Efectivo">Efectivo</option>
+                      <option value="Transferencia">Transferencia</option>
+                      <option value="Tarjeta">Tarjeta</option>
+                    </select>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full py-3 bg-purple-700 hover:bg-purple-800 text-white font-bold rounded-xl text-sm shadow-xs cursor-pointer"
+                >
+                  Guardar Movimiento Financiero
+                </button>
+              </form>
+
+              {/* Historial de Movimientos Financieros */}
+              <div className="lg:col-span-7 bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-pink-100 pb-2">
+                  <h3 className="font-bold text-base text-gray-800">Bitácora de Movimientos</h3>
+                  <div className="flex gap-1">
+                    {['TODAS', 'JOYERIA', 'GALLETAS', 'GENERAL'].map(area => (
+                      <button
+                        key={area}
+                        onClick={() => setFiltroAreaFinanzas(area)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                          filtroAreaFinanzas === area ? 'bg-purple-800 text-white' : 'bg-pink-50 text-gray-600'
+                        }`}
+                      >
+                        {area}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {movimientosFiltrados.length === 0 ? (
+                  <p className="text-xs text-gray-400 text-center py-8">
+                    No hay movimientos registrados en esta vista.
+                  </p>
+                ) : (
+                  <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                    {movimientosFiltrados.map(mov => {
+                      const esPositivo = mov.tipo === 'INGRESO' || mov.tipo === 'ABONO_FONDO'
+                      const fecha = new Date(mov.created_at)
+                      return (
+                        <div key={mov.id} className="p-3 rounded-xl border border-pink-50 hover:bg-pink-50/30 flex items-center justify-between gap-3 text-xs">
+                          <div className="space-y-0.5">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
+                                mov.area === 'GALLETAS' ? 'bg-amber-100 text-amber-900' :
+                                mov.area === 'JOYERIA' ? 'bg-purple-100 text-purple-900' :
+                                'bg-gray-100 text-gray-700'
+                              }`}>
+                                {mov.area}
+                              </span>
+                              <span className={`font-bold ${esPositivo ? 'text-emerald-700' : 'text-red-600'}`}>
+                                {mov.tipo.replace('_', ' ')}
+                              </span>
+                              {mov.fondo_nombre && (
+                                <span className="px-2 py-0.5 rounded bg-purple-50 text-purple-800 font-semibold">
+                                  {mov.fondo_nombre}
+                                </span>
+                              )}
+                              <span className="text-gray-400 text-[11px]">
+                                {fecha.toLocaleDateString('es-MX')}
+                              </span>
+                            </div>
+                            <p className="font-semibold text-gray-800 text-sm">{mov.concepto}</p>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className={`text-base font-extrabold ${esPositivo ? 'text-emerald-700' : 'text-red-600'}`}>
+                              {esPositivo ? '+' : '-'}${Number(mov.monto).toFixed(2)}
+                            </span>
+                            <button
+                              onClick={() => eliminarMovimientoFinanciero(mov)}
+                              className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg cursor-pointer"
+                              title="Eliminar y revertir saldo"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ==================== MÓDULO 8: TICKETS ==================== */}
         {vistaActiva === 'tickets' && (
           <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
             <div className="mb-4">
@@ -2531,7 +3398,7 @@ export default function App() {
                           </span>
                           {Number(ticket.descuento) > 0 && (
                             <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
-                              Desc/Promo: -${Number(ticket.descuento).toFixed(0)}
+                              Promo/Desc: -${Number(ticket.descuento).toFixed(2)}
                             </span>
                           )}
                           <span className="text-xs text-gray-400">
@@ -2550,7 +3417,7 @@ export default function App() {
 
                       <div className="flex items-center justify-between sm:justify-end gap-3 border-t sm:border-t-0 pt-2 sm:pt-0 border-pink-50">
                         <div className="text-right mr-2">
-                          <p className="text-xs text-gray-400">Total Cobrado</p>
+                          <p className="text-xs text-gray-400">Total Real Cobrado</p>
                           <p className="text-xl font-extrabold text-purple-900">${Number(ticket.total).toFixed(2)}</p>
                         </div>
 
@@ -2578,12 +3445,12 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== MÓDULO 8: CORTES DE CAJA POR DÍA ==================== */}
+        {/* ==================== MÓDULO 9: CORTES DE CAJA POR DÍA ==================== */}
         {vistaActiva === 'cortes' && (
           <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
             <div className="mb-4">
               <h2 className="text-2xl font-bold text-gray-800">Cortes de Caja por Día</h2>
-              <p className="text-xs text-gray-500">Resumen diario de ingresos por método de pago (incluye ventas de piso y pedidos entregados)</p>
+              <p className="text-xs text-gray-500">Resumen diario de ingresos por método de pago (con descuentos de promoción ya restados)</p>
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-4 pr-1">
@@ -2627,7 +3494,7 @@ export default function App() {
                           </div>
 
                           <div className="p-2.5 rounded-xl bg-amber-50/80 border border-amber-200">
-                            <span className="text-[11px] text-amber-900 font-semibold block">Ganancia Neta</span>
+                            <span className="text-[11px] text-amber-900 font-semibold block">Ganancia Neta Real</span>
                             <span className="text-base font-extrabold text-amber-900">${corte.gananciaTotal.toFixed(2)}</span>
                           </div>
 
@@ -2686,43 +3553,74 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== MÓDULO 9: ANALÍTICAS Y GUÍA DE RESURTIDO ==================== */}
+        {/* ==================== MÓDULO 10: ANALÍTICAS PRECISAS Y GUÍA DE RESURTIDO ==================== */}
         {vistaActiva === 'analiticas' && (
           <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
             <div>
-              <h2 className="text-2xl font-bold text-gray-800">Analíticas y Guía de Resurtido</h2>
+              <h2 className="text-2xl font-bold text-gray-800">Analíticas Reales y Guía de Resurtido</h2>
               <p className="text-xs text-gray-500">
-                Descubre qué artículos se venden más, qué categorías dejan mayor ganancia y qué conviene comprar o no al surtir.
+                Cálculos exactos con descuentos de promociones ya descontados para saber qué productos dejan más ganancia real.
               </p>
             </div>
 
+            {/* Tarjetas de Auditoría de Ventas (Bruto vs Promos vs Real vs Ganancia Neta) */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+              <div className="bg-white p-4 rounded-2xl border border-pink-100 shadow-2xs">
+                <span className="text-xs text-gray-500 font-semibold">Venta a Precio Normal (Bruto)</span>
+                <p className="text-xl font-extrabold text-gray-700 mt-1">${analiticas.ventasBrutasTotales.toFixed(2)}</p>
+                <span className="text-[11px] text-gray-400">Antes de aplicar promos</span>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-amber-200 shadow-2xs">
+                <span className="text-xs text-amber-800 font-semibold">Descuentos en Promociones</span>
+                <p className="text-xl font-extrabold text-amber-700 mt-1">-${analiticas.descuentosTotales.toFixed(2)}</p>
+                <span className="text-[11px] text-gray-400">Ahorro otorgado en combos (2x, 3x)</span>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-purple-200 shadow-2xs">
+                <span className="text-xs text-purple-800 font-semibold">Ingreso Real Cobrado</span>
+                <p className="text-xl font-extrabold text-purple-950 mt-1">${analiticas.ventasRealesTotales.toFixed(2)}</p>
+                <span className="text-[11px] text-gray-400">Dinero real que entró a caja</span>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-emerald-200 shadow-2xs">
+                <span className="text-xs text-emerald-700 font-semibold">Ganancia Neta Real (Post-Promo)</span>
+                <p className="text-xl font-extrabold text-emerald-700 mt-1">${analiticas.gananciaNetaTotalVentas.toFixed(2)}</p>
+                <span className="text-[11px] text-gray-400">
+                  Margen real: {analiticas.ventasRealesTotales > 0 ? Math.round((analiticas.gananciaNetaTotalVentas / analiticas.ventasRealesTotales) * 100) : 0}%
+                </span>
+              </div>
+            </div>
+
+            {/* Tarjetas de Valor de Inventario Actual */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="bg-white p-4 rounded-2xl border border-pink-100 shadow-2xs">
                 <span className="text-xs text-gray-500 font-semibold">Inversión Actual en Stock (Costo)</span>
-                <p className="text-2xl font-extrabold text-gray-800 mt-1">${analiticas.valorInventarioCosto.toFixed(2)}</p>
+                <p className="text-xl font-extrabold text-gray-800 mt-1">${analiticas.valorInventarioCosto.toFixed(2)}</p>
                 <span className="text-[11px] text-gray-400">Capital invertido en piezas disponibles</span>
               </div>
 
               <div className="bg-white p-4 rounded-2xl border border-pink-100 shadow-2xs">
                 <span className="text-xs text-gray-500 font-semibold">Valor de Venta del Inventario</span>
-                <p className="text-2xl font-extrabold text-purple-900 mt-1">${analiticas.valorInventarioVenta.toFixed(2)}</p>
-                <span className="text-[11px] text-gray-400">Ingreso potencial si se vende todo el stock</span>
+                <p className="text-xl font-extrabold text-purple-900 mt-1">${analiticas.valorInventarioVenta.toFixed(2)}</p>
+                <span className="text-[11px] text-gray-400">Ingreso potencial a precio normal</span>
               </div>
 
               <div className="bg-white p-4 rounded-2xl border border-pink-100 shadow-2xs">
                 <span className="text-xs text-emerald-700 font-semibold">Ganancia Potencial en Mesa</span>
-                <p className="text-2xl font-extrabold text-emerald-700 mt-1">
+                <p className="text-xl font-extrabold text-emerald-700 mt-1">
                   ${(analiticas.valorInventarioVenta - analiticas.valorInventarioCosto).toFixed(2)}
                 </p>
-                <span className="text-[11px] text-gray-400">Utilidad neta estimada del stock actual</span>
+                <span className="text-[11px] text-gray-400">Utilidad estimada del stock actual</span>
               </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* TABLA 1: TOP MÁS VENDIDOS CON GANANCIA REAL POST-PROMO */}
               <div className="bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs">
                 <h3 className="font-bold text-base text-gray-800 mb-3 flex items-center gap-2">
                   <TrendingUp size={18} className="text-purple-700" />
-                  Top 10 Artículos Más Vendidos
+                  Top 10 Artículos Más Vendidos (Ganancia Real)
                 </h3>
                 {analiticas.topMasVendidos.length === 0 ? (
                   <p className="text-xs text-gray-400 py-6 text-center">Registra ventas para ver el ranking de productos estrella.</p>
@@ -2731,20 +3629,21 @@ export default function App() {
                     {analiticas.topMasVendidos.map((item, idx) => (
                       <div key={item.id} className="flex items-center justify-between p-2.5 rounded-xl bg-pink-50/40 border border-pink-100 text-xs">
                         <div className="flex items-center gap-2.5">
-                          <span className="w-6 h-6 rounded-full bg-purple-800 text-white font-bold flex items-center justify-center">
+                          <span className="w-6 h-6 rounded-full bg-purple-800 text-white font-bold flex items-center justify-center shrink-0">
                             {idx + 1}
                           </span>
                           <div>
                             <p className="font-bold text-gray-800">{item.nombre}</p>
                             <span className="text-[11px] text-gray-500">
-                              {item.categoria} {item.tematica ? `• ${item.tematica}` : ''} • Stock actual: <strong>{item.stockActual}</strong>
+                              {item.categoria} • Stock: <strong>{item.stockActual}</strong>
+                              {item.descuentosAplicados > 0 ? ` • Promo desc: -$${item.descuentosAplicados.toFixed(0)}` : ''}
                             </span>
                           </div>
                         </div>
-                        <div className="text-right">
-                          <span className="font-extrabold text-sm text-purple-900">{item.unidadesVendidas} vendidos</span>
-                          <span className="block text-[11px] text-emerald-700 font-semibold">
-                            Ganancia: ${item.gananciaEstimada.toFixed(0)}
+                        <div className="text-right shrink-0">
+                          <span className="font-extrabold text-sm text-purple-900">{item.unidadesVendidas} pzas (${item.ingresosReales.toFixed(0)})</span>
+                          <span className="block text-[11px] text-emerald-700 font-bold">
+                            Ganancia Real: ${item.gananciaReal.toFixed(2)}
                           </span>
                         </div>
                       </div>
@@ -2753,39 +3652,49 @@ export default function App() {
                 )}
               </div>
 
+              {/* TABLA 2: RENDIMIENTO REAL POR CATEGORÍA */}
               <div className="bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs">
                 <h3 className="font-bold text-base text-gray-800 mb-3 flex items-center gap-2">
                   <BarChart3 size={18} className="text-purple-700" />
-                  Rentabilidad por Categoría (Incluye Pedidos)
+                  Rentabilidad Real por Categoría (Post-Promociones)
                 </h3>
                 {analiticas.resumenCategorias.length === 0 ? (
                   <p className="text-xs text-gray-400 py-6 text-center">Sin datos de categorías vendidas aún.</p>
                 ) : (
                   <div className="space-y-2.5">
-                    {analiticas.resumenCategorias.map(cat => (
-                      <div key={cat.categoria} className="p-3 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-between text-xs">
-                        <div>
-                          <span className="font-extrabold text-gray-800 text-sm">{cat.categoria}</span>
-                          <span className="block text-gray-500">{cat.unidades} piezas / encargos vendidos</span>
+                    {analiticas.resumenCategorias.map(cat => {
+                      const margenCat = cat.ingresosReales > 0 ? Math.round((cat.gananciaReal / cat.ingresosReales) * 100) : 0
+                      return (
+                        <div key={cat.categoria} className="p-3 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-between text-xs">
+                          <div>
+                            <span className="font-extrabold text-gray-800 text-sm">{cat.categoria}</span>
+                            <span className="block text-gray-500">
+                              {cat.unidades} pzas • Costo: ${cat.costoTotal.toFixed(0)}
+                              {cat.descuentos > 0 ? ` • Promos: -$${cat.descuentos.toFixed(0)}` : ''}
+                            </span>
+                          </div>
+                          <div className="text-right">
+                            <span className="font-bold text-gray-700 block">Cobrado Real: ${cat.ingresosReales.toFixed(2)}</span>
+                            <span className="font-extrabold text-emerald-700 text-sm">
+                              Utilidad Real: ${cat.gananciaReal.toFixed(2)} ({margenCat}%)
+                            </span>
+                          </div>
                         </div>
-                        <div className="text-right">
-                          <span className="font-bold text-gray-700 block">Ventas: ${cat.ingresos.toFixed(2)}</span>
-                          <span className="font-extrabold text-emerald-700 text-sm">Utilidad: ${cat.ganancia.toFixed(2)}</span>
-                        </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
               </div>
             </div>
 
+            {/* GUÍA DE COMPRA: QUÉ SURTIR Y QUÉ NO COMPRAR */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="bg-white p-5 rounded-2xl border border-emerald-200 shadow-2xs">
                 <h3 className="font-bold text-base text-emerald-900 mb-1 flex items-center gap-2">
                   ✅ ¡Sí Comprar! (Urgente Resurtir)
                 </h3>
                 <p className="text-xs text-gray-500 mb-3">
-                  Productos con ventas comprobadas que ya están agotados o con solo 1 pieza disponible.
+                  Productos con ventas comprobadas que están agotados o con solo 1 pieza, ordenados por la ganancia real que te dejan.
                 </p>
                 {analiticas.urgenteResurtir.length === 0 ? (
                   <p className="text-xs text-gray-400 py-4 text-center">Todo tu stock estrella está bien abastecido.</p>
@@ -2804,7 +3713,7 @@ export default function App() {
                             Quedan: {p.stockActual}
                           </span>
                           <span className="block font-bold text-emerald-800 mt-0.5">
-                            {p.unidadesVendidas} vendidos
+                            {p.unidadesVendidas} vendidos (Utilidad: ${p.gananciaReal.toFixed(0)})
                           </span>
                         </div>
                       </div>
@@ -2816,10 +3725,10 @@ export default function App() {
               <div className="bg-white p-5 rounded-2xl border border-amber-200 shadow-2xs">
                 <h3 className="font-bold text-base text-amber-900 mb-1 flex items-center gap-2">
                   <AlertTriangle size={18} className="text-amber-600" />
-                  No Surtir Todavía (Baja Rotación)
+                  No Surtir Todavía (Capital Estancado)
                 </h3>
                 <p className="text-xs text-gray-500 mb-3">
-                  Artículos con 2 o más piezas acumuladas y 0 ventas registradas (sugerencia: ponlos en Promoción).
+                  Artículos con 2 o más piezas acumuladas y 0 ventas registradas (sugerencia: mételos a Promoción).
                 </p>
                 {analiticas.huesoSinRotacion.length === 0 ? (
                   <p className="text-xs text-gray-400 py-4 text-center">No tienes mercancía estancada.</p>
@@ -2846,6 +3755,69 @@ export default function App() {
         )}
       </main>
 
+      {/* ==================== MODAL RÁPIDO PARA ABONAR / EXTRAER DE UN FONDO ==================== */}
+      {modalFondoAccion && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <form onSubmit={ejecutarAccionRapidaFondo} className="bg-white w-full max-w-sm rounded-3xl shadow-xl p-5 border border-pink-100 space-y-4">
+            <div className="flex justify-between items-center border-b border-pink-100 pb-2">
+              <h3 className="font-extrabold text-base text-gray-800">
+                {modalFondoAccion.operacion === 'ABONO_FONDO' ? '➕ Abonar a ' : '➖ Extraer de '}
+                {modalFondoAccion.fondo.nombre}
+              </h3>
+              <button type="button" onClick={() => setModalFondoAccion(null)} className="text-gray-400 hover:text-gray-600">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-3 rounded-xl bg-pink-50/60 text-xs flex justify-between">
+              <span className="text-gray-600">Saldo Actual:</span>
+              <strong className="text-purple-950 text-sm">${Number(modalFondoAccion.fondo.saldo || 0).toFixed(2)}</strong>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-600 mb-1">Monto ($) *</label>
+              <input
+                type="number"
+                step="0.01"
+                required
+                autoFocus
+                placeholder="Ej. 200.00"
+                value={montoAccionFondo}
+                onChange={e => setMontoAccionFondo(e.target.value)}
+                className="w-full px-3 py-2.5 border border-pink-200 rounded-xl text-base font-extrabold text-purple-950"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-600 mb-1">Nota o Concepto (Opcional)</label>
+              <input
+                type="text"
+                placeholder="Ej. Apartado de venta del domingo / Pago pedido..."
+                value={conceptoAccionFondo}
+                onChange={e => setConceptoAccionFondo(e.target.value)}
+                className="w-full px-3 py-2 border border-pink-200 rounded-xl text-xs"
+              />
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setModalFondoAccion(null)}
+                className="flex-1 py-2.5 bg-gray-100 text-gray-700 font-bold rounded-xl text-xs cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                className="flex-1 py-2.5 bg-purple-700 hover:bg-purple-800 text-white font-bold rounded-xl text-xs cursor-pointer"
+              >
+                Confirmar
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* ==================== MODAL DE RECIBO / TICKET DIGITAL ==================== */}
       {ticketSeleccionado && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -2855,7 +3827,7 @@ export default function App() {
                 <Sparkles size={24} />
               </div>
               <h3 className="font-extrabold text-lg text-gray-800">Destellos de Oro</h3>
-              <p className="text-xs text-gray-500">Joyería y Bisutería • Guasave, Sin.</p>
+              <p className="text-xs text-gray-500">Joyería y Repostería • Guasave, Sin.</p>
               <p className="text-xs font-bold text-purple-800 mt-1">
                 Recibo de Venta #{ticketSeleccionado.folio || ticketSeleccionado.id.slice(0, 6)}
               </p>
