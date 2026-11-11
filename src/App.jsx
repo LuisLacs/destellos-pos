@@ -42,7 +42,6 @@ function guardarCacheLocal(key, data) {
   }
 }
 
-// Formateador para mostrar signos negativos claramente (ej. -$3.00 o $247.00)
 function formatearMoneda(valor) {
   const num = Number(valor || 0)
   if (num < 0) {
@@ -102,7 +101,6 @@ function calcularMejorPrecioPromo(cantidadTotal, precioBase, reglas) {
   return { totalConPromo, paquetesAplicados }
 }
 
-// Procesador de la cola de operaciones guardadas sin internet
 async function procesarColaOfflineEnServidor(colaActual) {
   const pendientesRestantes = []
 
@@ -181,6 +179,8 @@ async function procesarColaOfflineEnServidor(colaActual) {
 export default function App() {
   // 'ventas' | 'inventario' | 'agregar' | 'promociones' | 'pedidos' | 'calendario' | 'tickets' | 'cortes' | 'finanzas' | 'analiticas'
   const [vistaActiva, setVistaActiva] = useState('ventas')
+  // Sub-vista en teléfonos para el módulo de ventas: 'catalogo' | 'carrito'
+  const [subVistaVentasMovil, setSubVistaVentasMovil] = useState('catalogo')
   
   const [productos, setProductos] = useState(() => leerCacheLocal(STORAGE_KEYS.PRODUCTOS, []))
   const [ventas, setVentas] = useState(() => leerCacheLocal(STORAGE_KEYS.VENTAS, []))
@@ -205,13 +205,8 @@ export default function App() {
   const [montoRecibido, setMontoRecibido] = useState('')
   const [procesandoVenta, setProcesandoVenta] = useState(false)
 
-  // Selector de método de pago para cada pedido al entregarlo en el calendario
   const [metodoPagoPedidos, setMetodoPagoPedidos] = useState({})
-
-  // Estado para el Modal de Recibo (Ticket Digital)
   const [ticketSeleccionado, setTicketSeleccionado] = useState(null)
-
-  // Estado para expandir días en la sección Cortes
   const [diaCorteExpandido, setDiaCorteExpandido] = useState(null)
 
   // Estados para Inventario
@@ -256,16 +251,16 @@ export default function App() {
   })
 
   // Estados para el Módulo de Finanzas
-  const [filtroAreaFinanzas, setFiltroAreaFinanzas] = useState('TODAS') // 'TODAS' | 'JOYERIA' | 'GALLETAS' | 'GENERAL'
+  const [filtroAreaFinanzas, setFiltroAreaFinanzas] = useState('TODAS')
   const [nuevoMovimiento, setNuevoMovimiento] = useState({
     area: 'JOYERIA',
-    tipo: 'EGRESO', // 'INGRESO' | 'EGRESO' | 'ABONO_FONDO' | 'RETIRO_FONDO'
+    tipo: 'EGRESO',
     fondo_id: '',
     concepto: '',
     monto: '',
     metodo_pago: 'Efectivo'
   })
-  const [modalFondoAccion, setModalFondoAccion] = useState(null) // { fondo, operacion: 'ABONO_FONDO' | 'RETIRO_FONDO' }
+  const [modalFondoAccion, setModalFondoAccion] = useState(null)
   const [montoAccionFondo, setMontoAccionFondo] = useState('')
   const [conceptoAccionFondo, setConceptoAccionFondo] = useState('')
   const [mostrarFormNuevoFondo, setMostrarFormNuevoFondo] = useState(false)
@@ -476,7 +471,6 @@ export default function App() {
     }).filter(Boolean))
   }
 
-  // Motor de Promociones con desglose de descuento exacto por cada artículo del carrito
   const calculoCarrito = (() => {
     const subtotalSinPromo = carrito.reduce((acc, item) => acc + (Number(item.precio_publico) * item.qty), 0)
     const costoTotal = carrito.reduce((acc, item) => acc + (Number(item.costo_produccion || 0) * item.qty), 0)
@@ -488,7 +482,6 @@ export default function App() {
 
     const promosActivas = promociones.filter(p => p.activa)
 
-    // 1. Promociones por PRODUCTO
     for (const item of carrito) {
       const promoProd = promosActivas.find(p => p.tipo_aplicacion === 'PRODUCTO' && p.producto_id === item.id)
       if (promoProd) {
@@ -511,7 +504,6 @@ export default function App() {
       }
     }
 
-    // 2. Promociones por CATEGORÍA
     const promosCategoria = promosActivas.filter(p => p.tipo_aplicacion === 'CATEGORIA')
     for (const promoCat of promosCategoria) {
       const itemsCat = carrito.filter(i => i.categoria === promoCat.categoria && !itemsYaProcesados.has(i.id))
@@ -560,6 +552,8 @@ export default function App() {
   const cambioCliente = metodoPago === 'Efectivo' && Number(montoRecibido) >= calculoCarrito.totalFinal
     ? Number(montoRecibido) - calculoCarrito.totalFinal
     : 0
+
+  const totalPiezasCarrito = carrito.reduce((acc, item) => acc + item.qty, 0)
 
   async function cobrarVenta() {
     if (carrito.length === 0) return
@@ -646,6 +640,7 @@ export default function App() {
       setDescuentoManual(0)
       setMontoRecibido('')
       setMetodoPago('Efectivo')
+      setSubVistaVentasMovil('catalogo')
       setTicketSeleccionado(ventaConDetalles)
     }
 
@@ -682,10 +677,11 @@ export default function App() {
       setDescuentoManual(0)
       setMontoRecibido('')
       setMetodoPago('Efectivo')
+      setSubVistaVentasMovil('catalogo')
       await recargarDatos()
       setTicketSeleccionado(ventaConDetalles)
     } catch (error) {
-      console.warn('Señal inestable, guardando venta en memoria interna de la tablet:', error)
+      console.warn('Señal inestable, guardando venta en memoria interna:', error)
       guardarVentaModoOffline()
     } finally {
       setProcesandoVenta(false)
@@ -892,7 +888,7 @@ export default function App() {
     else recargarDatos()
   }
 
-  // --- GESTIÓN DEL MÓDULO DE FINANZAS (SOPORTE COMPLETO PARA NÚMEROS ROJOS / NEGATIVOS) ---
+  // --- GESTIÓN DEL MÓDULO DE FINANZAS ---
   async function crearFondoFinanciero(e) {
     e.preventDefault()
     if (!nuevoFondo.nombre) return alert('Escribe un nombre para el fondo o cuenta.')
@@ -931,7 +927,6 @@ export default function App() {
     }
   }
 
-  // Permite ajustar manualmente el saldo de un fondo (incluso ponerle un valor negativo directo como -3 o -700)
   async function ajustarSaldoManualFondo(fondo) {
     const entrada = window.prompt(
       `Ajustar saldo actual de "${fondo.nombre}".\nPuedes escribir números negativos si está en números rojos (ej. -3 o -700):`,
@@ -978,7 +973,6 @@ export default function App() {
     const montoNum = Number(montoAccionFondo)
     const saldoActual = Number(fondo.saldo || 0)
 
-    // SIN Math.max(0, ...): Ahora permite que el fondo baje a números negativos (-700, -3, etc.)
     const nuevoSaldo = operacion === 'ABONO_FONDO'
       ? (fondo.tipo === 'DEUDA' ? saldoActual - montoNum : saldoActual + montoNum)
       : (fondo.tipo === 'DEUDA' ? saldoActual + montoNum : saldoActual - montoNum)
@@ -1058,7 +1052,6 @@ export default function App() {
       if (fondoObj) {
         const saldoAct = Number(fondoObj.saldo || 0)
         const esSumaAlFondo = nuevoMovimiento.tipo === 'INGRESO' || nuevoMovimiento.tipo === 'ABONO_FONDO'
-        // SIN Math.max(0, ...): Permite restar más allá de 0 y quedar en números rojos
         nuevoSaldoFondo = esSumaAlFondo
           ? (fondoObj.tipo === 'DEUDA' ? saldoAct - montoNum : saldoAct + montoNum)
           : (fondoObj.tipo === 'DEUDA' ? saldoAct + montoNum : saldoAct - montoNum)
@@ -1131,7 +1124,6 @@ export default function App() {
           const saldoAct = Number(fondoObj.saldo || 0)
           const montoNum = Number(mov.monto || 0)
           const eraPositivo = mov.tipo === 'ABONO_FONDO' || mov.tipo === 'INGRESO'
-          // Reversión exacta sin límite de 0
           const saldoRevertido = eraPositivo
             ? (fondoObj.tipo === 'DEUDA' ? saldoAct + montoNum : saldoAct - montoNum)
             : (fondoObj.tipo === 'DEUDA' ? saldoAct - montoNum : saldoAct + montoNum)
@@ -1224,7 +1216,7 @@ export default function App() {
       setProductos(actualizados)
       guardarCacheLocal(STORAGE_KEYS.PRODUCTOS, actualizados)
       encolarAccionOffline({ tipo: 'CREAR_PRODUCTO', payload: payloadProd })
-      alert('¡Producto guardado en la tablet (Modo Offline)!')
+      alert('¡Producto guardado en el dispositivo (Modo Offline)!')
       setNuevoProd({
         codigo: '', nombre_producto: '', categoria: 'CADENAS-COLLARES', tematica: '',
         cantidad: 1, costo_produccion: '', precio_publico: '', imagen_url: ''
@@ -1333,42 +1325,73 @@ export default function App() {
     return coincideCat && coincideTematica && coincideTexto && pasaFiltroStock
   })
 
-  const cortesPorDia = ventas.reduce((acc, venta) => {
-    const fechaObj = new Date(venta.created_at)
-    const fechaKey = fechaObj.toLocaleDateString('es-MX', {
-      year: 'numeric', month: '2-digit', day: '2-digit'
-    })
-    const fechaLegible = fechaObj.toLocaleDateString('es-MX', {
-      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-    })
+  // --- CORTES DE CAJA CON SEPARACIÓN MONETARIA DE JOYERÍA Y REPOSTERÍA ---
+  const listaCortes = (() => {
+    const lookupCat = {}
+    productos.forEach(p => { lookupCat[p.id] = p.categoria })
 
-    if (!acc[fechaKey]) {
-      acc[fechaKey] = {
-        fechaKey,
-        fechaLegible,
-        totalVendido: 0,
-        gananciaTotal: 0,
-        efectivo: 0,
-        transferencia: 0,
-        tarjeta: 0,
-        tickets: []
+    const cortesMap = ventas.reduce((acc, venta) => {
+      const fechaObj = new Date(venta.created_at)
+      const fechaKey = fechaObj.toLocaleDateString('es-MX', {
+        year: 'numeric', month: '2-digit', day: '2-digit'
+      })
+      const fechaLegible = fechaObj.toLocaleDateString('es-MX', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+      })
+
+      if (!acc[fechaKey]) {
+        acc[fechaKey] = {
+          fechaKey,
+          fechaLegible,
+          totalVendido: 0,
+          gananciaTotal: 0,
+          efectivo: 0,
+          transferencia: 0,
+          tarjeta: 0,
+          joyeria: { total: 0, ganancia: 0, efectivo: 0, transferencia: 0, tarjeta: 0 },
+          reposteria: { total: 0, ganancia: 0, efectivo: 0, transferencia: 0, tarjeta: 0 },
+          tickets: []
+        }
       }
-    }
 
-    const monto = Number(venta.total || 0)
-    acc[fechaKey].totalVendido += monto
-    acc[fechaKey].gananciaTotal += Number(venta.ganancia_neta || 0)
-    if (venta.metodo_pago === 'Efectivo') acc[fechaKey].efectivo += monto
-    if (venta.metodo_pago === 'Transferencia') acc[fechaKey].transferencia += monto
-    if (venta.metodo_pago === 'Tarjeta') acc[fechaKey].tarjeta += monto
-    acc[fechaKey].tickets.push(venta)
+      const monto = Number(venta.total || 0)
+      acc[fechaKey].totalVendido += monto
+      acc[fechaKey].gananciaTotal += Number(venta.ganancia_neta || 0)
+      if (venta.metodo_pago === 'Efectivo') acc[fechaKey].efectivo += monto
+      if (venta.metodo_pago === 'Transferencia') acc[fechaKey].transferencia += monto
+      if (venta.metodo_pago === 'Tarjeta') acc[fechaKey].tarjeta += monto
 
-    return acc
-  }, {})
+      // Separar cuánto del ticket corresponde a Joyería y cuánto a Repostería
+      const itemsTicket = venta.items || []
+      const sumaBruta = itemsTicket.reduce((s, it) => s + Number(it.subtotal || (Number(it.precio_unitario || 0) * Number(it.qty || 0))), 0)
+      const factor = sumaBruta > 0 ? (monto / sumaBruta) : 1
 
-  const listaCortes = Object.values(cortesPorDia)
+      itemsTicket.forEach(item => {
+        const cant = Number(item.qty || 0)
+        const bruto = Number(item.subtotal || (Number(item.precio_unitario || 0) * cant))
+        const realItem = item.ingreso_real !== undefined ? Number(item.ingreso_real) : (bruto * factor)
+        const costoItem = Number(item.costo_unitario || 0) * cant
+        const utilItem = realItem - costoItem
 
-  // --- MOTOR UNIFICADO DE ANALÍTICAS REALES Y FINANZAS SEPARADAS (CON SOPORTE PARA NÚMEROS ROJOS) ---
+        const catItem = item.categoria || lookupCat[item.id] || ''
+        const esReposteria = catItem === 'REPOSTERÍA' || (item.nombre_producto && item.nombre_producto.toLowerCase().includes('galleta'))
+        const destino = esReposteria ? acc[fechaKey].reposteria : acc[fechaKey].joyeria
+
+        destino.total += realItem
+        destino.ganancia += utilItem
+        if (venta.metodo_pago === 'Efectivo') destino.efectivo += realItem
+        if (venta.metodo_pago === 'Transferencia') destino.transferencia += realItem
+        if (venta.metodo_pago === 'Tarjeta') destino.tarjeta += realItem
+      })
+
+      acc[fechaKey].tickets.push(venta)
+      return acc
+    }, {})
+
+    return Object.values(cortesMap)
+  })()
+
+  // --- MOTOR UNIFICADO DE ANALÍTICAS REALES Y FINANZAS SEPARADAS ---
   const { analiticas, resumenFinanzas } = (() => {
     const mapaProductos = {}
     const mapaCategorias = {}
@@ -1487,7 +1510,6 @@ export default function App() {
       })
     })
 
-    // Sumar todos los movimientos manuales (tanto INGRESO/ABONO_FONDO como EGRESO/RETIRO_FONDO)
     let ingresosExtraJoyeria = 0
     let egresosJoyeria = 0
     let ingresosExtraGalletas = 0
@@ -1504,7 +1526,6 @@ export default function App() {
       }
     })
 
-    // La suma de fondos respeta saldos negativos (si un fondo está en -$3, resta $3)
     const totalEnFondosAhorro = fondos
       .filter(f => f.tipo !== 'DEUDA')
       .reduce((acc, f) => acc + Number(f.saldo || 0), 0)
@@ -1517,11 +1538,6 @@ export default function App() {
     const topMasVendidos = [...listaProds]
       .filter(p => p.unidadesVendidas > 0 && !p.esPedido)
       .sort((a, b) => b.unidadesVendidas - a.unidadesVendidas)
-      .slice(0, 10)
-
-    const topMasRentables = [...listaProds]
-      .filter(p => p.gananciaReal > 0 && !p.esPedido)
-      .sort((a, b) => b.gananciaReal - a.gananciaReal)
       .slice(0, 10)
 
     const urgenteResurtir = [...listaProds]
@@ -1544,7 +1560,6 @@ export default function App() {
         ventasRealesTotales,
         gananciaNetaTotalVentas,
         topMasVendidos,
-        topMasRentables,
         urgenteResurtir,
         huesoSinRotacion,
         resumenCategorias,
@@ -1556,7 +1571,6 @@ export default function App() {
           ...statsJoyeria,
           ingresosExtra: ingresosExtraJoyeria,
           egresos: egresosJoyeria,
-          // Flujo de Caja Real: Todo lo que entró (ventas POS + ingresos manuales) menos todo lo que salió (egresos/reinversiones)
           flujoNetoTotal: statsJoyeria.ventasReales + ingresosExtraJoyeria - egresosJoyeria,
           utilidadLibre: statsJoyeria.gananciaVentas + ingresosExtraJoyeria - egresosJoyeria
         },
@@ -1588,17 +1602,61 @@ export default function App() {
     m => filtroAreaFinanzas === 'TODAS' || m.area === filtroAreaFinanzas
   )
 
+  const ITEMS_MENU = [
+    { id: 'ventas', label: 'Ventas', icon: ShoppingBag },
+    { id: 'inventario', label: 'Inventario', icon: Package },
+    { id: 'agregar', label: 'Agregar', icon: PlusCircle },
+    { id: 'promociones', label: 'Promos', icon: Tag },
+    { id: 'calendario', label: 'Entregas', icon: Calendar },
+    { id: 'pedidos', label: 'Pedidos', icon: ClipboardList },
+    { id: 'finanzas', label: 'Finanzas', icon: Wallet },
+    { id: 'tickets', label: 'Tickets', icon: Receipt },
+    { id: 'cortes', label: 'Cortes', icon: BarChart3 },
+    { id: 'analiticas', label: 'Analíticas', icon: TrendingUp }
+  ]
+
   return (
-    <div className="flex h-screen overflow-hidden bg-destellos-pink">
+    <div className="flex flex-col md:flex-row h-screen overflow-hidden bg-destellos-pink">
       
-      {/* SIDEBAR DE NAVEGACIÓN */}
-      <aside className="w-20 md:w-56 bg-white border-r border-pink-100 flex flex-col justify-between shadow-sm z-10">
+      {/* CABECERA SUPERIOR COMPACTA PARA TELÉFONOS MÓVILES */}
+      <header className="md:hidden bg-white border-b border-pink-100 px-3 py-2 flex items-center justify-between shrink-0 z-20">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full bg-destellos-lilac flex items-center justify-center text-white font-bold shadow-inner">
+            <Sparkles size={16} />
+          </div>
+          <div>
+            <h1 className="font-bold text-sm leading-tight text-destellos-dark">Destellos de Oro</h1>
+            <span className="text-[10px] text-destellos-gold font-semibold block">POS Móvil</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <div className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 ${
+            esOnline ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-amber-50 text-amber-900 border border-amber-200'
+          }`}>
+            {esOnline ? <Wifi size={12} /> : <WifiOff size={12} />}
+            <span>{esOnline ? 'Online' : 'Offline'}</span>
+            {colaOffline.length > 0 && <span>({colaOffline.length})</span>}
+          </div>
+
+          <button
+            onClick={recargarDatos}
+            className="p-1.5 rounded-lg bg-pink-50 text-purple-900 border border-pink-200"
+            title="Sincronizar Datos"
+          >
+            <RefreshCw size={14} className={cargando || sincronizando ? 'animate-spin' : ''} />
+          </button>
+        </div>
+      </header>
+
+      {/* SIDEBAR DE NAVEGACIÓN (TABLET Y ESCRITORIO) */}
+      <aside className="hidden md:flex md:w-56 bg-white border-r border-pink-100 flex-col justify-between shadow-sm z-10 shrink-0">
         <div className="overflow-y-auto">
-          <div className="p-4 flex items-center justify-center md:justify-start gap-2 border-b border-pink-100">
+          <div className="p-4 flex items-center gap-2 border-b border-pink-100">
             <div className="w-10 h-10 rounded-full bg-destellos-lilac flex items-center justify-center text-white font-bold shadow-inner shrink-0">
               <Sparkles size={20} />
             </div>
-            <div className="hidden md:block">
+            <div>
               <h1 className="font-bold text-base leading-tight text-destellos-dark">Destellos de Oro</h1>
               <span className="text-xs text-destellos-gold font-medium">POS & Finanzas</span>
             </div>
@@ -1607,136 +1665,136 @@ export default function App() {
           <nav className="p-2 space-y-1 mt-1">
             <button
               onClick={() => setVistaActiva('ventas')}
-              className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+              className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                 vistaActiva === 'ventas' 
                   ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                   : 'text-gray-600 hover:bg-pink-50'
               }`}
             >
               <ShoppingBag size={19} />
-              <span className="hidden md:inline text-sm">Ventas (POS)</span>
+              <span className="text-sm">Ventas (POS)</span>
             </button>
 
             <button
               onClick={() => setVistaActiva('inventario')}
-              className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+              className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                 vistaActiva === 'inventario' 
                   ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                   : 'text-gray-600 hover:bg-pink-50'
               }`}
             >
               <Package size={19} />
-              <span className="hidden md:inline text-sm">Inventario</span>
+              <span className="text-sm">Inventario</span>
             </button>
 
             <button
               onClick={() => setVistaActiva('agregar')}
-              className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+              className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                 vistaActiva === 'agregar' 
                   ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                   : 'text-gray-600 hover:bg-pink-50'
               }`}
             >
               <PlusCircle size={19} />
-              <span className="hidden md:inline text-sm">Agregar Prod.</span>
+              <span className="text-sm">Agregar Prod.</span>
             </button>
 
             <button
               onClick={() => setVistaActiva('promociones')}
-              className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+              className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                 vistaActiva === 'promociones' 
                   ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                   : 'text-gray-600 hover:bg-pink-50'
               }`}
             >
               <Tag size={19} />
-              <span className="hidden md:inline text-sm">Promociones</span>
+              <span className="text-sm">Promociones</span>
             </button>
 
             <div className="pt-1.5 my-1.5 border-t border-pink-100 space-y-1">
               <button
                 onClick={() => setVistaActiva('calendario')}
-                className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                   vistaActiva === 'calendario' 
                     ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                     : 'text-gray-600 hover:bg-pink-50'
                 }`}
               >
                 <Calendar size={19} />
-                <span className="hidden md:inline text-sm">Calendario Entregas</span>
+                <span className="text-sm">Calendario Entregas</span>
               </button>
 
               <button
                 onClick={() => setVistaActiva('pedidos')}
-                className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                   vistaActiva === 'pedidos' 
                     ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                     : 'text-gray-600 hover:bg-pink-50'
                 }`}
               >
                 <ClipboardList size={19} />
-                <span className="hidden md:inline text-sm">Registrar Pedido</span>
+                <span className="text-sm">Registrar Pedido</span>
               </button>
             </div>
 
             <div className="pt-1.5 my-1.5 border-t border-pink-100 space-y-1">
               <button
                 onClick={() => setVistaActiva('finanzas')}
-                className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                   vistaActiva === 'finanzas' 
                     ? 'bg-purple-800 text-white shadow-sm font-semibold' 
                     : 'text-purple-900 bg-purple-50/60 hover:bg-purple-100'
                 }`}
               >
                 <Wallet size={19} />
-                <span className="hidden md:inline text-sm">Finanzas y Fondos</span>
+                <span className="text-sm">Finanzas y Fondos</span>
               </button>
 
               <button
                 onClick={() => setVistaActiva('tickets')}
-                className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                   vistaActiva === 'tickets' 
                     ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                     : 'text-gray-600 hover:bg-pink-50'
                 }`}
               >
                 <Receipt size={19} />
-                <span className="hidden md:inline text-sm">Tickets</span>
+                <span className="text-sm">Tickets</span>
               </button>
 
               <button
                 onClick={() => setVistaActiva('cortes')}
-                className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                   vistaActiva === 'cortes' 
                     ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                     : 'text-gray-600 hover:bg-pink-50'
                 }`}
               >
                 <BarChart3 size={19} />
-                <span className="hidden md:inline text-sm">Cortes de Caja</span>
+                <span className="text-sm">Cortes de Caja</span>
               </button>
 
               <button
                 onClick={() => setVistaActiva('analiticas')}
-                className={`w-full flex items-center justify-center md:justify-start gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
                   vistaActiva === 'analiticas' 
                     ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
                     : 'text-gray-600 hover:bg-pink-50'
                 }`}
               >
                 <TrendingUp size={19} />
-                <span className="hidden md:inline text-sm">Analíticas / Surtir</span>
+                <span className="text-sm">Analíticas / Surtir</span>
               </button>
             </div>
           </nav>
         </div>
 
         <div className="p-2.5 border-t border-pink-100 space-y-2">
-          <div className={`p-2 rounded-xl text-xs font-bold flex items-center justify-center md:justify-start gap-2 ${
+          <div className={`p-2 rounded-xl text-xs font-bold flex items-center gap-2 ${
             esOnline ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-amber-50 text-amber-900 border border-amber-200'
           }`}>
             {esOnline ? <Wifi size={15} className="shrink-0" /> : <WifiOff size={15} className="shrink-0" />}
-            <div className="hidden md:block leading-tight">
+            <div className="leading-tight">
               <span>{esOnline ? 'En línea' : 'Modo Offline'}</span>
               {colaOffline.length > 0 && (
                 <span className="block text-[10px] font-normal">
@@ -1755,7 +1813,7 @@ export default function App() {
             ) : (
               <RefreshCw size={15} className={cargando || sincronizando ? 'animate-spin' : ''} />
             )}
-            <span className="hidden md:inline">
+            <span>
               {sincronizando ? 'Subiendo datos...' : colaOffline.length > 0 ? `Subir Pendientes (${colaOffline.length})` : 'Sincronizar Datos'}
             </span>
           </button>
@@ -1763,14 +1821,43 @@ export default function App() {
       </aside>
 
       {/* CONTENIDO PRINCIPAL */}
-      <main className="flex-1 flex overflow-hidden">
+      <main className="flex-1 flex overflow-hidden relative">
         
         {/* ==================== MÓDULO 1: VENTAS (POS) ==================== */}
         {vistaActiva === 'ventas' && (
-          <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+          <div className="flex-1 flex flex-col md:flex-row overflow-hidden w-full">
             
-            <div className="w-full md:w-5/12 lg:w-4/12 bg-white border-r border-pink-100 flex flex-col h-full shadow-sm">
-              <div className="p-3.5 border-b border-pink-100 flex justify-between items-center bg-pink-50/40">
+            {/* SELECTOR DE PESTAÑA MÓVIL (CATÁLOGO VS TICKET) */}
+            <div className="md:hidden grid grid-cols-2 gap-1.5 p-2 bg-white border-b border-pink-100 shrink-0">
+              <button
+                type="button"
+                onClick={() => setSubVistaVentasMovil('catalogo')}
+                className={`py-2 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 ${
+                  subVistaVentasMovil === 'catalogo'
+                    ? 'bg-purple-800 text-white shadow-2xs'
+                    : 'bg-pink-50/70 text-gray-600'
+                }`}
+              >
+                <Package size={15} /> Catálogo Productos
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubVistaVentasMovil('carrito')}
+                className={`py-2 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 ${
+                  subVistaVentasMovil === 'carrito'
+                    ? 'bg-purple-800 text-white shadow-2xs'
+                    : 'bg-pink-50/70 text-gray-600'
+                }`}
+              >
+                <ShoppingBag size={15} /> Ticket ({totalPiezasCarrito}) • ${calculoCarrito.totalFinal.toFixed(0)}
+              </button>
+            </div>
+
+            {/* IZQUIERDA: CARRITO / TICKET EN CURSO (Oculto en móvil si está viendo el catálogo) */}
+            <div className={`${
+              subVistaVentasMovil === 'carrito' ? 'flex' : 'hidden'
+            } md:flex w-full md:w-5/12 lg:w-4/12 bg-white border-r border-pink-100 flex-col flex-1 md:h-full shadow-sm overflow-hidden`}>
+              <div className="p-3.5 border-b border-pink-100 flex justify-between items-center bg-pink-50/40 shrink-0">
                 <h2 className="font-bold text-base text-gray-800">Ticket en Curso</h2>
                 {carrito.length > 0 && (
                   <button 
@@ -1802,12 +1889,12 @@ export default function App() {
                       <div className="flex items-center gap-2">
                         <button 
                           onClick={() => cambiarCantidadCarrito(item.id, -1, item.cantidad)}
-                          className="w-7 h-7 rounded-lg bg-white border border-pink-200 font-bold text-gray-700 active:scale-95"
+                          className="w-8 h-8 rounded-lg bg-white border border-pink-200 font-bold text-gray-700 active:scale-95"
                         >-</button>
                         <span className="w-6 text-center font-bold text-sm">{item.qty}</span>
                         <button 
                           onClick={() => cambiarCantidadCarrito(item.id, 1, item.cantidad)}
-                          className="w-7 h-7 rounded-lg bg-white border border-pink-200 font-bold text-gray-700 active:scale-95"
+                          className="w-8 h-8 rounded-lg bg-white border border-pink-200 font-bold text-gray-700 active:scale-95"
                         >+</button>
                       </div>
 
@@ -1833,7 +1920,7 @@ export default function App() {
                 )}
               </div>
 
-              <div className="p-3.5 border-t border-pink-200 bg-white space-y-2">
+              <div className="p-3.5 border-t border-pink-200 bg-white space-y-2 shrink-0">
                 <div>
                   <span className="block text-[11px] font-bold text-gray-500 mb-1">Método de Pago:</span>
                   <div className="grid grid-cols-3 gap-1.5">
@@ -1925,19 +2012,34 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex-1 flex flex-col h-full overflow-hidden p-4">
-              <div className="space-y-2.5 mb-3">
+            {/* DERECHA: CATÁLOGO DE PRODUCTOS (Con botón X en buscador y barra flotante en móvil) */}
+            <div className={`${
+              subVistaVentasMovil === 'catalogo' ? 'flex' : 'hidden'
+            } md:flex flex-1 flex-col h-full overflow-hidden p-3 md:p-4 relative`}>
+              <div className="space-y-2.5 mb-3 shrink-0">
                 <div className="flex gap-2">
+                  {/* Buscador con botón X de borrado rápido */}
                   <div className="relative flex-1">
-                    <Search className="absolute left-3.5 top-3 text-gray-400" size={18} />
+                    <Search className="absolute left-3.5 top-2.5 text-gray-400" size={18} />
                     <input
                       type="text"
-                      placeholder="Buscar por nombre, código o temática (ej. galletas, gatitos)..."
+                      placeholder="Buscar nombre, código o temática..."
                       value={busqueda}
                       onChange={e => setBusqueda(e.target.value)}
-                      className="w-full pl-10 pr-4 py-2 bg-white border border-pink-200 rounded-xl text-sm shadow-xs focus:outline-none focus:ring-2 focus:ring-purple-200"
+                      className="w-full pl-10 pr-9 py-2 bg-white border border-pink-200 rounded-xl text-sm shadow-xs focus:outline-none focus:ring-2 focus:ring-purple-200"
                     />
+                    {busqueda && (
+                      <button
+                        type="button"
+                        onClick={() => setBusqueda('')}
+                        className="absolute right-2.5 top-2 p-1 rounded-full bg-pink-100 hover:bg-pink-200 text-purple-900 cursor-pointer"
+                        title="Borrar búsqueda"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
                   </div>
+
                   <button
                     type="button"
                     onClick={() => setOcultarAgotados(!ocultarAgotados)}
@@ -1947,11 +2049,11 @@ export default function App() {
                         : 'bg-white text-gray-600 border-pink-200 hover:bg-pink-50'
                     }`}
                   >
-                    {ocultarAgotados ? '✓ Solo disponibles' : 'Ocultar agotados'}
+                    {ocultarAgotados ? '✓ Disp.' : 'Sin agotados'}
                   </button>
                 </div>
 
-                <div className="flex gap-2 overflow-x-auto pb-1">
+                <div className="flex gap-1.5 overflow-x-auto pb-1">
                   {CATEGORIAS.map(cat => (
                     <button
                       key={cat}
@@ -1959,7 +2061,7 @@ export default function App() {
                         setCategoriaFiltro(cat)
                         setTematicaFiltro('TODAS')
                       }}
-                      className={`px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
                         categoriaFiltro === cat
                           ? 'bg-purple-800 text-white shadow-xs'
                           : 'bg-white text-gray-600 border border-pink-200 hover:bg-pink-50'
@@ -2002,19 +2104,23 @@ export default function App() {
                 )}
               </div>
 
-              <div className="flex-1 overflow-y-auto pr-1">
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              <div className="flex-1 overflow-y-auto pr-1 pb-16 md:pb-2">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 md:gap-3">
                   {productosFiltrados.map(prod => {
                     const agotado = prod.cantidad <= 0
                     const etiquetaPromo = obtenerEtiquetaPromo(prod)
+                    const enCarritoItem = carrito.find(c => c.id === prod.id)
+
                     return (
                       <div
                         key={prod.id}
                         onClick={() => !agotado && agregarAlCarrito(prod)}
-                        className={`bg-white p-3.5 rounded-2xl border flex flex-col justify-between transition-all select-none ${
+                        className={`bg-white p-3 rounded-2xl border flex flex-col justify-between transition-all select-none ${
                           agotado 
                             ? 'opacity-55 border-gray-200 cursor-not-allowed' 
-                            : 'border-pink-100 hover:border-purple-300 shadow-xs active:scale-95 cursor-pointer'
+                            : enCarritoItem
+                              ? 'border-purple-500 ring-2 ring-purple-200 shadow-xs active:scale-95 cursor-pointer'
+                              : 'border-pink-100 hover:border-purple-300 shadow-xs active:scale-95 cursor-pointer'
                         }`}
                       >
                         <div>
@@ -2024,18 +2130,25 @@ export default function App() {
                             }`}>
                               {prod.codigo || prod.categoria.slice(0, 6)}
                             </span>
-                            {prod.imagen_url && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setImagenExpandidaId(imagenExpandidaId === prod.id ? null : prod.id)
-                                }}
-                                className="text-gray-400 hover:text-purple-700 p-0.5"
-                                title="Ver foto de apoyo"
-                              >
-                                <Eye size={15} />
-                              </button>
-                            )}
+                            <div className="flex items-center gap-1">
+                              {enCarritoItem && (
+                                <span className="px-1.5 py-0.5 rounded-full bg-purple-800 text-white text-[10px] font-extrabold">
+                                  {enCarritoItem.qty} en ticket
+                                </span>
+                              )}
+                              {prod.imagen_url && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setImagenExpandidaId(imagenExpandidaId === prod.id ? null : prod.id)
+                                  }}
+                                  className="text-gray-400 hover:text-purple-700 p-0.5"
+                                  title="Ver foto de apoyo"
+                                >
+                                  <Eye size={15} />
+                                </button>
+                              )}
+                            </div>
                           </div>
 
                           <h3 className="font-semibold text-sm text-gray-800 line-clamp-2 my-1">
@@ -2082,42 +2195,75 @@ export default function App() {
                   })}
                 </div>
               </div>
+
+              {/* BARRA FLOTANTE INFERIOR EN TELÉFONO CUANDO HAY PRODUCTOS EN EL CARRITO */}
+              {carrito.length > 0 && (
+                <div className="md:hidden absolute bottom-3 left-3 right-3 z-20">
+                  <button
+                    type="button"
+                    onClick={() => setSubVistaVentasMovil('carrito')}
+                    className="w-full py-3 px-4 rounded-2xl bg-purple-900 text-white shadow-lg flex items-center justify-between font-bold text-sm"
+                  >
+                    <span className="flex items-center gap-2">
+                      <ShoppingBag size={18} />
+                      Ver Ticket ({totalPiezasCarrito} {totalPiezasCarrito === 1 ? 'pza' : 'pzas'})
+                    </span>
+                    <span className="text-base font-extrabold bg-white/20 px-3 py-1 rounded-xl">
+                      Cobrar ${calculoCarrito.totalFinal.toFixed(2)} →
+                    </span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* ==================== MÓDULO 2: INVENTARIO ==================== */}
+        {/* ==================== MÓDULO 2: INVENTARIO (ADAPTADO A MÓVIL Y TABLET) ==================== */}
         {vistaActiva === 'inventario' && (
-          <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+          <div className="flex-1 flex flex-col p-3 md:p-6 overflow-hidden w-full">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2.5 mb-3 shrink-0">
               <div>
-                <h2 className="text-2xl font-bold text-gray-800">Control de Inventario</h2>
-                <p className="text-xs text-gray-500">Modifica precios, existencias, categorías (Joyería / Repostería) o fotos</p>
+                <h2 className="text-xl md:text-2xl font-bold text-gray-800">Control de Inventario</h2>
+                <p className="text-xs text-gray-500">Modifica precios, existencias, categorías o fotos desde celular o tablet</p>
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <input
-                  type="text"
-                  placeholder="Buscar producto o temática..."
-                  value={busqueda}
-                  onChange={e => setBusqueda(e.target.value)}
-                  className="px-3 py-2 bg-white border border-pink-200 rounded-xl text-sm"
-                />
+                {/* Buscador de Inventario con botón X */}
+                <div className="relative flex-1 min-w-[180px]">
+                  <input
+                    type="text"
+                    placeholder="Buscar producto o temática..."
+                    value={busqueda}
+                    onChange={e => setBusqueda(e.target.value)}
+                    className="w-full pl-3 pr-8 py-2 bg-white border border-pink-200 rounded-xl text-sm"
+                  />
+                  {busqueda && (
+                    <button
+                      type="button"
+                      onClick={() => setBusqueda('')}
+                      className="absolute right-2 top-2 p-1 rounded-full bg-pink-100 text-purple-900 cursor-pointer"
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+
                 <select
                   value={categoriaFiltro}
                   onChange={e => {
                     setCategoriaFiltro(e.target.value)
                     setTematicaFiltro('TODAS')
                   }}
-                  className="px-3 py-2 bg-white border border-pink-200 rounded-xl text-sm font-medium"
+                  className="px-3 py-2 bg-white border border-pink-200 rounded-xl text-xs md:text-sm font-medium"
                 >
                   {CATEGORIAS.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
+
                 {categoriaFiltro === 'PINES' && (
                   <select
                     value={tematicaFiltro}
                     onChange={e => setTematicaFiltro(e.target.value)}
-                    className="px-3 py-2 bg-purple-50 border border-purple-200 text-purple-900 rounded-xl text-sm font-bold"
+                    className="px-3 py-2 bg-purple-50 border border-purple-200 text-purple-900 rounded-xl text-xs md:text-sm font-bold"
                   >
                     <option value="TODAS">Todas las temáticas</option>
                     {tematicasPines.map(t => <option key={t} value={t}>{t}</option>)}
@@ -2126,7 +2272,224 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto bg-white rounded-2xl border border-pink-100 shadow-xs">
+            {/* VISTA MÓVIL DE INVENTARIO (TARJETAS FÁCILES DE USAR EN TELÉFONO) */}
+            <div className="md:hidden flex-1 overflow-y-auto space-y-2.5 pr-1">
+              {productosFiltrados.map(prod => {
+                const enEdicion = editandoId === prod.id
+                const ganancia = Number(prod.precio_publico) - Number(prod.costo_produccion)
+                const mostrarFoto = imagenExpandidaId === prod.id
+
+                return (
+                  <div key={prod.id} className="bg-white p-3.5 rounded-2xl border border-pink-100 shadow-2xs space-y-2.5">
+                    {enEdicion ? (
+                      <div className="space-y-2.5">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[10px] font-bold text-gray-500">Código</label>
+                            <input
+                              value={formEdicion.codigo || ''}
+                              onChange={e => setFormEdicion({...formEdicion, codigo: e.target.value})}
+                              className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold text-gray-500">Categoría</label>
+                            <select
+                              value={formEdicion.categoria}
+                              onChange={e => setFormEdicion({...formEdicion, categoria: e.target.value})}
+                              className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+                            >
+                              {CATEGORIAS.filter(c => c !== 'TODAS').map(c => (
+                                <option key={c} value={c}>{c}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        {formEdicion.categoria === 'PINES' && (
+                          <div>
+                            <label className="text-[10px] font-bold text-purple-800">Temática del Pin</label>
+                            <input
+                              type="text"
+                              list="lista-tematicas"
+                              value={formEdicion.tematica || ''}
+                              onChange={e => setFormEdicion({...formEdicion, tematica: e.target.value})}
+                              className="w-full border border-purple-300 rounded-lg px-2 py-1.5 text-xs font-bold text-purple-900"
+                            />
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="text-[10px] font-bold text-gray-500">Nombre del Producto</label>
+                          <input
+                            value={formEdicion.nombre_producto}
+                            onChange={e => setFormEdicion({...formEdicion, nombre_producto: e.target.value})}
+                            className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <label className="text-[10px] font-bold text-gray-500">Stock</label>
+                            <input
+                              type="number"
+                              value={formEdicion.cantidad}
+                              onChange={e => setFormEdicion({...formEdicion, cantidad: e.target.value})}
+                              className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold text-gray-500">Costo ($)</label>
+                            <input
+                              type="number"
+                              value={formEdicion.costo_produccion}
+                              onChange={e => setFormEdicion({...formEdicion, costo_produccion: e.target.value})}
+                              className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs text-right"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold text-gray-500">Precio ($)</label>
+                            <input
+                              type="number"
+                              value={formEdicion.precio_publico}
+                              onChange={e => setFormEdicion({...formEdicion, precio_publico: e.target.value})}
+                              className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs font-bold text-purple-900 text-right"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2 pt-1">
+                          <button
+                            onClick={guardarEdicion}
+                            className="flex-1 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1"
+                          >
+                            <Check size={15} /> Guardar Cambios
+                          </button>
+                          <button
+                            onClick={() => setEditandoId(null)}
+                            className="px-4 py-2 bg-gray-200 text-gray-700 rounded-xl text-xs font-bold"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                              <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-gray-100 text-gray-700">
+                                {prod.codigo || 'S/C'}
+                              </span>
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                prod.categoria === 'REPOSTERÍA' ? 'bg-amber-100 text-amber-900' : 'bg-purple-50 text-purple-800'
+                              }`}>
+                                {prod.categoria}
+                              </span>
+                              {prod.tematica && (
+                                <span className="px-2 py-0.5 rounded-full bg-pink-100 text-pink-900 font-bold text-[10px]">
+                                  ✨ {prod.tematica}
+                                </span>
+                              )}
+                            </div>
+                            <h3 className="font-bold text-sm text-gray-800">{prod.nombre_producto}</h3>
+                          </div>
+
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-extrabold shrink-0 ${
+                            prod.cantidad <= 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-800'
+                          }`}>
+                            {prod.cantidad <= 0 ? 'AGOTADO' : `${prod.cantidad} disp.`}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2 pt-2 border-t border-pink-50 text-xs">
+                          <div>
+                            <span className="text-gray-400 block text-[10px]">Costo Prod.</span>
+                            <strong className="text-gray-700">${prod.costo_produccion}</strong>
+                          </div>
+                          <div>
+                            <span className="text-gray-400 block text-[10px]">Precio Público</span>
+                            <strong className="text-gray-900 text-sm">${prod.precio_publico}</strong>
+                          </div>
+                          <div>
+                            <span className="text-gray-400 block text-[10px]">Ganancia Base</span>
+                            <strong className="text-emerald-700">${ganancia.toFixed(0)}</strong>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-2 border-t border-pink-50">
+                          <button
+                            onClick={() => setImagenExpandidaId(mostrarFoto ? null : prod.id)}
+                            className="px-3 py-1.5 rounded-xl border border-pink-200 text-xs font-bold text-purple-800 flex items-center gap-1"
+                          >
+                            {mostrarFoto ? <EyeOff size={14} /> : <Eye size={14} />}
+                            Foto
+                          </button>
+                          <button
+                            onClick={() => iniciarEdicion(prod)}
+                            className="px-3 py-1.5 rounded-xl bg-purple-50 text-purple-900 text-xs font-bold flex items-center gap-1"
+                          >
+                            <Edit2 size={14} /> Editar
+                          </button>
+                          <button
+                            onClick={() => eliminarProducto(prod)}
+                            className="p-1.5 rounded-xl text-red-500 border border-red-100"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </>
+                    )}
+
+                    {mostrarFoto && (
+                      <div className="pt-2 border-t border-pink-100 space-y-2">
+                        {prod.imagen_url ? (
+                          <img src={prod.imagen_url} alt={prod.nombre_producto} className="w-28 h-28 object-cover rounded-xl border mx-auto" />
+                        ) : (
+                          <div className="text-center text-xs text-gray-400 py-3">Sin foto asignada</div>
+                        )}
+                        <div className="flex gap-2">
+                          <label className="flex-1 py-2 bg-purple-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1 cursor-pointer">
+                            <Camera size={14} /> Cámara
+                            <input
+                              type="file"
+                              accept="image/*"
+                              capture="environment"
+                              className="hidden"
+                              onChange={async (e) => {
+                                const url = await comprimirYSubirImagen(e.target.files[0])
+                                if (url) {
+                                  await supabase.from('productos').update({ imagen_url: url }).eq('id', prod.id)
+                                  recargarDatos()
+                                }
+                              }}
+                            />
+                          </label>
+                          <label className="flex-1 py-2 bg-destellos-lilac text-purple-950 rounded-xl text-xs font-bold flex items-center justify-center gap-1 cursor-pointer">
+                            <Image size={14} /> Galería
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={async (e) => {
+                                const url = await comprimirYSubirImagen(e.target.files[0])
+                                if (url) {
+                                  await supabase.from('productos').update({ imagen_url: url }).eq('id', prod.id)
+                                  recargarDatos()
+                                }
+                              }}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* VISTA TABLET / ESCRITORIO DE INVENTARIO (TABLA COMPLETA) */}
+            <div className="hidden md:block flex-1 overflow-y-auto bg-white rounded-2xl border border-pink-100 shadow-xs">
               <table className="w-full text-left border-collapse text-sm">
                 <thead className="bg-pink-50/70 text-gray-600 text-xs uppercase sticky top-0">
                   <tr>
@@ -2371,8 +2734,8 @@ export default function App() {
 
         {/* ==================== MÓDULO 3: AGREGAR PRODUCTO ==================== */}
         {vistaActiva === 'agregar' && (
-          <div className="flex-1 overflow-y-auto p-6 flex justify-center items-start">
-            <form onSubmit={crearProducto} className="w-full max-w-lg bg-white p-6 rounded-2xl border border-pink-100 shadow-sm space-y-4">
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 flex justify-center items-start w-full">
+            <form onSubmit={crearProducto} className="w-full max-w-lg bg-white p-5 md:p-6 rounded-2xl border border-pink-100 shadow-sm space-y-4">
               <h2 className="text-xl font-bold text-gray-800 border-b border-pink-100 pb-3">
                 Registrar Nuevo Producto
               </h2>
@@ -2538,7 +2901,7 @@ export default function App() {
 
         {/* ==================== MÓDULO 4: PROMOCIONES AUTOMÁTICAS ==================== */}
         {vistaActiva === 'promociones' && (
-          <div className="flex-1 overflow-y-auto p-4 md:p-6">
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 w-full">
             <div className="mb-4">
               <h2 className="text-2xl font-bold text-gray-800">Promociones Automáticas</h2>
               <p className="text-xs text-gray-500">
@@ -2744,7 +3107,7 @@ export default function App() {
 
         {/* ==================== MÓDULO 5: CALENDARIO DE ENTREGAS ==================== */}
         {vistaActiva === 'calendario' && (
-          <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
+          <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden w-full">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
               <div>
                 <h2 className="text-2xl font-bold text-gray-800">Calendario de Entregas</h2>
@@ -2754,7 +3117,7 @@ export default function App() {
               </div>
               <button
                 onClick={() => setVistaActiva('pedidos')}
-                className="px-4 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer"
+                className="px-4 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer self-start md:self-auto"
               >
                 + Registrar Nuevo Pedido
               </button>
@@ -2869,8 +3232,8 @@ export default function App() {
 
         {/* ==================== MÓDULO 6: REGISTRAR PEDIDO POR ENCARGO ==================== */}
         {vistaActiva === 'pedidos' && (
-          <div className="flex-1 overflow-y-auto p-6 flex justify-center items-start">
-            <form onSubmit={crearPedido} className="w-full max-w-lg bg-white p-6 rounded-2xl border border-pink-100 shadow-sm space-y-4">
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 flex justify-center items-start w-full">
+            <form onSubmit={crearPedido} className="w-full max-w-lg bg-white p-5 md:p-6 rounded-2xl border border-pink-100 shadow-sm space-y-4">
               <h2 className="text-xl font-bold text-gray-800 border-b border-pink-100 pb-3 flex items-center gap-2">
                 <ClipboardList size={22} className="text-purple-700" />
                 Registrar Pedido por Encargo
@@ -2979,7 +3342,7 @@ export default function App() {
 
         {/* ==================== MÓDULO 7: FINANZAS, BILLETERAS Y FONDOS ==================== */}
         {vistaActiva === 'finanzas' && (
-          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 w-full">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-bold text-gray-800">Centro Financiero y Fondos</h2>
@@ -2995,9 +3358,8 @@ export default function App() {
               </button>
             </div>
 
-            {/* 1. BILLETERAS SEPARADAS: JOYERÍA VS GALLETAS (SOPORTA NÚMEROS ROJOS) */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-              {/* Billetera Joyería (Destellos de Oro) */}
+              {/* Billetera Joyería */}
               <div className={`bg-white p-5 rounded-2xl border shadow-2xs space-y-3 ${
                 resumenFinanzas.joyeria.flujoNetoTotal < 0 ? 'border-red-300 bg-red-50/10' : 'border-purple-200'
               }`}>
@@ -3047,7 +3409,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Billetera Repostería (Galletas) */}
+              {/* Billetera Repostería */}
               <div className={`bg-white p-5 rounded-2xl border shadow-2xs space-y-3 ${
                 resumenFinanzas.galletas.flujoNetoTotal < 0 ? 'border-red-300 bg-red-50/10' : 'border-amber-200'
               }`}>
@@ -3098,7 +3460,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Formulario desplegable para crear un nuevo fondo */}
             {mostrarFormNuevoFondo && (
               <form onSubmit={crearFondoFinanciero} className="bg-white p-5 rounded-2xl border border-purple-200 shadow-xs space-y-3">
                 <h4 className="font-bold text-sm text-purple-950">Agregar Nuevo Fondo o Cuenta (Soporta saldo inicial negativo)</h4>
@@ -3148,7 +3509,6 @@ export default function App() {
               </form>
             )}
 
-            {/* 2. BÓVEDA DE FONDOS (NIHAO, SHEIN, CAJA, GALLETAS, TARJETA) */}
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="font-bold text-base text-gray-800 flex items-center gap-2">
@@ -3170,7 +3530,7 @@ export default function App() {
 
               {fondos.length === 0 ? (
                 <div className="bg-white p-6 rounded-2xl border border-pink-100 text-center text-xs text-gray-400">
-                  Ejecuta el script SQL en Supabase o presiona "+ Crear Nuevo Fondo" para inicializar tus fondos (Nihao, Shein, Caja, Galletas).
+                  Ejecuta el script SQL en Supabase o presiona "+ Crear Nuevo Fondo" para inicializar tus fondos.
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -3282,7 +3642,6 @@ export default function App() {
               )}
             </div>
 
-            {/* 3. FORMULARIO DE REGISTRO Y BITÁCORA DE MOVIMIENTOS */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
               <form onSubmit={registrarMovimientoGeneral} className="lg:col-span-5 bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs space-y-3.5">
                 <h3 className="font-bold text-base text-gray-800 border-b border-pink-100 pb-2">
@@ -3383,7 +3742,6 @@ export default function App() {
                 </button>
               </form>
 
-              {/* Historial de Movimientos Financieros */}
               <div className="lg:col-span-7 bg-white p-5 rounded-2xl border border-pink-100 shadow-2xs space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-pink-100 pb-2">
                   <h3 className="font-bold text-base text-gray-800">Bitácora de Movimientos</h3>
@@ -3461,7 +3819,7 @@ export default function App() {
 
         {/* ==================== MÓDULO 8: TICKETS ==================== */}
         {vistaActiva === 'tickets' && (
-          <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
+          <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden w-full">
             <div className="mb-4">
               <h2 className="text-2xl font-bold text-gray-800">Historial de Tickets</h2>
               <p className="text-xs text-gray-500">Consulta todos los recibos de piso y pedidos entregados</p>
@@ -3494,7 +3852,7 @@ export default function App() {
                           )}
                           {ticket.pendienteSync && (
                             <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
-                              ⏳ Guardado en Tablet (Pendiente subir)
+                              ⏳ Guardado en Dispositivo
                             </span>
                           )}
                           <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-pink-50 text-gray-700 border border-pink-200">
@@ -3549,12 +3907,14 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== MÓDULO 9: CORTES DE CAJA POR DÍA ==================== */}
+        {/* ==================== MÓDULO 9: CORTES DE CAJA DIVIDIDOS (JOYERÍA VS REPOSTERÍA) ==================== */}
         {vistaActiva === 'cortes' && (
-          <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
+          <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden w-full">
             <div className="mb-4">
               <h2 className="text-2xl font-bold text-gray-800">Cortes de Caja por Día</h2>
-              <p className="text-xs text-gray-500">Resumen diario de ingresos por método de pago (con descuentos de promoción ya restados)</p>
+              <p className="text-xs text-gray-500">
+                Desglose diario general y separación exacta entre Joyería y Repostería para repartir el dinero en sus fondos.
+              </p>
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-4 pr-1">
@@ -3570,46 +3930,102 @@ export default function App() {
                     <div key={corte.fechaKey} className="bg-white rounded-2xl border border-pink-100 shadow-xs overflow-hidden">
                       <div 
                         onClick={() => setDiaCorteExpandido(abierto ? null : corte.fechaKey)}
-                        className="p-4 bg-white hover:bg-pink-50/30 transition-colors cursor-pointer flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+                        className="p-4 bg-white hover:bg-pink-50/30 transition-colors cursor-pointer space-y-3"
                       >
-                        <div>
-                          <span className="text-xs font-bold uppercase tracking-wider text-purple-700 bg-purple-50 px-2.5 py-0.5 rounded-full">
-                            {corte.tickets.length} {corte.tickets.length === 1 ? 'operación registrada' : 'operaciones registradas'}
-                          </span>
-                          <h3 className="text-lg font-extrabold text-gray-800 capitalize mt-1">
-                            {corte.fechaLegible}
-                          </h3>
+                        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                          <div>
+                            <span className="text-xs font-bold uppercase tracking-wider text-purple-700 bg-purple-50 px-2.5 py-0.5 rounded-full">
+                              {corte.tickets.length} {corte.tickets.length === 1 ? 'ticket registrado' : 'tickets registrados'}
+                            </span>
+                            <h3 className="text-lg font-extrabold text-gray-800 capitalize mt-1">
+                              {corte.fechaLegible}
+                            </h3>
+                          </div>
+
+                          {/* Totales Generales del Día */}
+                          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 flex-1 max-w-3xl">
+                            <div className="p-2.5 rounded-xl bg-emerald-50/70 border border-emerald-100">
+                              <span className="text-[10px] text-emerald-800 font-semibold block">Efectivo Total</span>
+                              <span className="text-sm font-extrabold text-emerald-900">${corte.efectivo.toFixed(2)}</span>
+                            </div>
+
+                            <div className="p-2.5 rounded-xl bg-blue-50/70 border border-blue-100">
+                              <span className="text-[10px] text-blue-800 font-semibold block">Transferencias</span>
+                              <span className="text-sm font-extrabold text-blue-900">${corte.transferencia.toFixed(2)}</span>
+                            </div>
+
+                            <div className="p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-100">
+                              <span className="text-[10px] text-indigo-800 font-semibold block">Tarjeta</span>
+                              <span className="text-sm font-extrabold text-indigo-900">${corte.tarjeta.toFixed(2)}</span>
+                            </div>
+
+                            <div className="p-2.5 rounded-xl bg-amber-50/80 border border-amber-200">
+                              <span className="text-[10px] text-amber-900 font-semibold block">Ganancia Día</span>
+                              <span className="text-sm font-extrabold text-amber-900">${corte.gananciaTotal.toFixed(2)}</span>
+                            </div>
+
+                            <div className="p-2.5 rounded-xl bg-purple-900 text-white flex flex-col justify-center col-span-2 sm:col-span-1">
+                              <span className="text-[10px] text-purple-200 font-semibold block">Venta Total Día</span>
+                              <span className="text-base font-extrabold">${corte.totalVendido.toFixed(2)}</span>
+                            </div>
+                          </div>
+
+                          <div className="hidden lg:flex items-center justify-end text-gray-400">
+                            {abierto ? <ChevronUp size={22} /> : <ChevronDown size={22} />}
+                          </div>
                         </div>
 
-                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 flex-1 max-w-3xl">
-                          <div className="p-2.5 rounded-xl bg-emerald-50/70 border border-emerald-100">
-                            <span className="text-[11px] text-emerald-800 font-semibold block">Efectivo en Caja</span>
-                            <span className="text-base font-extrabold text-emerald-900">${corte.efectivo.toFixed(2)}</span>
+                        {/* SEPARACIÓN MONETARIA: JOYERÍA VS REPOSTERÍA (GALLETAS) */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-2 border-t border-pink-100">
+                          {/* Caja Joyería */}
+                          <div className="p-3 rounded-xl bg-purple-50/60 border border-purple-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div>
+                              <span className="text-xs font-extrabold text-purple-950 flex items-center gap-1.5">
+                                <Gem size={14} className="text-purple-700" />
+                                Corte Joyería (Destellos de Oro)
+                              </span>
+                              <div className="flex flex-wrap gap-2.5 text-[11px] text-gray-600 mt-1">
+                                <span>Efectivo: <strong>${corte.joyeria.efectivo.toFixed(2)}</strong></span>
+                                <span>Transf: <strong>${corte.joyeria.transferencia.toFixed(2)}</strong></span>
+                                {corte.joyeria.tarjeta > 0 && (
+                                  <span>Tarjeta: <strong>${corte.joyeria.tarjeta.toFixed(2)}</strong></span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="sm:text-right border-t sm:border-t-0 pt-1.5 sm:pt-0 border-purple-100">
+                              <span className="text-sm font-extrabold text-purple-950 block">
+                                Venta: ${corte.joyeria.total.toFixed(2)}
+                              </span>
+                              <span className="text-[11px] font-bold text-emerald-700">
+                                Ganancia: ${corte.joyeria.ganancia.toFixed(2)}
+                              </span>
+                            </div>
                           </div>
 
-                          <div className="p-2.5 rounded-xl bg-blue-50/70 border border-blue-100">
-                            <span className="text-[11px] text-blue-800 font-semibold block">Transferencias</span>
-                            <span className="text-base font-extrabold text-blue-900">${corte.transferencia.toFixed(2)}</span>
+                          {/* Caja Repostería */}
+                          <div className="p-3 rounded-xl bg-amber-50/70 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div>
+                              <span className="text-xs font-extrabold text-amber-950 flex items-center gap-1.5">
+                                <Cookie size={14} className="text-amber-700" />
+                                Corte Repostería (Galletas)
+                              </span>
+                              <div className="flex flex-wrap gap-2.5 text-[11px] text-gray-600 mt-1">
+                                <span>Efectivo: <strong>${corte.reposteria.efectivo.toFixed(2)}</strong></span>
+                                <span>Transf: <strong>${corte.reposteria.transferencia.toFixed(2)}</strong></span>
+                                {corte.reposteria.tarjeta > 0 && (
+                                  <span>Tarjeta: <strong>${corte.reposteria.tarjeta.toFixed(2)}</strong></span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="sm:text-right border-t sm:border-t-0 pt-1.5 sm:pt-0 border-amber-100">
+                              <span className="text-sm font-extrabold text-amber-950 block">
+                                Venta: ${corte.reposteria.total.toFixed(2)}
+                              </span>
+                              <span className="text-[11px] font-bold text-emerald-700">
+                                Ganancia: ${corte.reposteria.ganancia.toFixed(2)}
+                              </span>
+                            </div>
                           </div>
-
-                          <div className="p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-100">
-                            <span className="text-[11px] text-indigo-800 font-semibold block">Tarjeta</span>
-                            <span className="text-base font-extrabold text-indigo-900">${corte.tarjeta.toFixed(2)}</span>
-                          </div>
-
-                          <div className="p-2.5 rounded-xl bg-amber-50/80 border border-amber-200">
-                            <span className="text-[11px] text-amber-900 font-semibold block">Ganancia Neta Real</span>
-                            <span className="text-base font-extrabold text-amber-900">${corte.gananciaTotal.toFixed(2)}</span>
-                          </div>
-
-                          <div className="p-2.5 rounded-xl bg-purple-900 text-white flex flex-col justify-center">
-                            <span className="text-[11px] text-purple-200 font-semibold block">Venta Total Día</span>
-                            <span className="text-lg font-extrabold">${corte.totalVendido.toFixed(2)}</span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-end text-gray-400">
-                          {abierto ? <ChevronUp size={22} /> : <ChevronDown size={22} />}
                         </div>
                       </div>
 
@@ -3659,7 +4075,7 @@ export default function App() {
 
         {/* ==================== MÓDULO 10: ANALÍTICAS PRECISAS Y GUÍA DE RESURTIDO ==================== */}
         {vistaActiva === 'analiticas' && (
-          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 w-full">
             <div>
               <h2 className="text-2xl font-bold text-gray-800">Analíticas Reales y Guía de Resurtido</h2>
               <p className="text-xs text-gray-500">
@@ -3853,6 +4269,28 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* BARRA DE NAVEGACIÓN INFERIOR PARA TELÉFONOS MÓVILES */}
+      <nav className="md:hidden bg-white border-t border-pink-200 px-2 py-1.5 flex items-center gap-1 overflow-x-auto shrink-0 z-20">
+        {ITEMS_MENU.map(item => {
+          const Icono = item.icon
+          const activo = vistaActiva === item.id
+          return (
+            <button
+              key={item.id}
+              onClick={() => setVistaActiva(item.id)}
+              className={`flex flex-col items-center justify-center min-w-[64px] py-1.5 px-2 rounded-xl text-[10px] font-bold transition-all shrink-0 ${
+                activo
+                  ? 'bg-destellos-lilac text-purple-950 font-extrabold shadow-2xs'
+                  : 'text-gray-500'
+              }`}
+            >
+              <Icono size={17} className="mb-0.5" />
+              <span>{item.label}</span>
+            </button>
+          )
+        })}
+      </nav>
 
       {/* ==================== MODAL RÁPIDO PARA ABONAR / EXTRAER DE UN FONDO ==================== */}
       {modalFondoAccion && (
