@@ -179,8 +179,9 @@ async function procesarColaOfflineEnServidor(colaActual) {
 export default function App() {
   // 'ventas' | 'inventario' | 'agregar' | 'promociones' | 'pedidos' | 'calendario' | 'tickets' | 'cortes' | 'finanzas' | 'analiticas'
   const [vistaActiva, setVistaActiva] = useState('ventas')
-  // Sub-vista en teléfonos para el módulo de ventas: 'catalogo' | 'carrito'
+  // En celular inicia SIEMPRE en 'catalogo' para poder seleccionar productos de inmediato
   const [subVistaVentasMovil, setSubVistaVentasMovil] = useState('catalogo')
+  const [esPantallaMovil, setEsPantallaMovil] = useState(() => window.innerWidth < 768)
   
   const [productos, setProductos] = useState(() => leerCacheLocal(STORAGE_KEYS.PRODUCTOS, []))
   const [ventas, setVentas] = useState(() => leerCacheLocal(STORAGE_KEYS.VENTAS, []))
@@ -271,6 +272,15 @@ export default function App() {
     saldo: '',
     meta: ''
   })
+
+  // Detector de tamaño de pantalla para garantizar vista móvil fluida en teléfonos
+  useEffect(() => {
+    function actualizarTamano() {
+      setEsPantallaMovil(window.innerWidth < 768)
+    }
+    window.addEventListener('resize', actualizarTamano)
+    return () => window.removeEventListener('resize', actualizarTamano)
+  }, [])
 
   function encolarAccionOffline(nuevaAccion) {
     setColaOffline(prev => {
@@ -1361,7 +1371,6 @@ export default function App() {
       if (venta.metodo_pago === 'Transferencia') acc[fechaKey].transferencia += monto
       if (venta.metodo_pago === 'Tarjeta') acc[fechaKey].tarjeta += monto
 
-      // Separar cuánto del ticket corresponde a Joyería y cuánto a Repostería
       const itemsTicket = venta.items || []
       const sumaBruta = itemsTicket.reduce((s, it) => s + Number(it.subtotal || (Number(it.precio_unitario || 0) * Number(it.qty || 0))), 0)
       const factor = sumaBruta > 0 ? (monto / sumaBruta) : 1
@@ -1616,611 +1625,660 @@ export default function App() {
   ]
 
   return (
-    <div className="flex flex-col md:flex-row h-screen overflow-hidden bg-destellos-pink">
+    <div className={`flex ${esPantallaMovil ? 'flex-col' : 'flex-row'} h-[100dvh] w-full overflow-hidden bg-destellos-pink`}>
       
       {/* CABECERA SUPERIOR COMPACTA PARA TELÉFONOS MÓVILES */}
-      <header className="md:hidden bg-white border-b border-pink-100 px-3 py-2 flex items-center justify-between shrink-0 z-20">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-destellos-lilac flex items-center justify-center text-white font-bold shadow-inner">
-            <Sparkles size={16} />
-          </div>
-          <div>
-            <h1 className="font-bold text-sm leading-tight text-destellos-dark">Destellos de Oro</h1>
-            <span className="text-[10px] text-destellos-gold font-semibold block">POS Móvil</span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5">
-          <div className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 ${
-            esOnline ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-amber-50 text-amber-900 border border-amber-200'
-          }`}>
-            {esOnline ? <Wifi size={12} /> : <WifiOff size={12} />}
-            <span>{esOnline ? 'Online' : 'Offline'}</span>
-            {colaOffline.length > 0 && <span>({colaOffline.length})</span>}
-          </div>
-
-          <button
-            onClick={recargarDatos}
-            className="p-1.5 rounded-lg bg-pink-50 text-purple-900 border border-pink-200"
-            title="Sincronizar Datos"
-          >
-            <RefreshCw size={14} className={cargando || sincronizando ? 'animate-spin' : ''} />
-          </button>
-        </div>
-      </header>
-
-      {/* SIDEBAR DE NAVEGACIÓN (TABLET Y ESCRITORIO) */}
-      <aside className="hidden md:flex md:w-56 bg-white border-r border-pink-100 flex-col justify-between shadow-sm z-10 shrink-0">
-        <div className="overflow-y-auto">
-          <div className="p-4 flex items-center gap-2 border-b border-pink-100">
-            <div className="w-10 h-10 rounded-full bg-destellos-lilac flex items-center justify-center text-white font-bold shadow-inner shrink-0">
-              <Sparkles size={20} />
+      {esPantallaMovil && (
+        <header className="bg-white border-b border-pink-100 px-3 py-2 flex items-center justify-between shrink-0 z-20">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-full bg-destellos-lilac flex items-center justify-center text-white font-bold shadow-inner">
+              <Sparkles size={16} />
             </div>
             <div>
-              <h1 className="font-bold text-base leading-tight text-destellos-dark">Destellos de Oro</h1>
-              <span className="text-xs text-destellos-gold font-medium">POS & Finanzas</span>
+              <h1 className="font-bold text-sm leading-tight text-destellos-dark">Destellos de Oro</h1>
+              <span className="text-[10px] text-destellos-gold font-semibold block">POS Móvil</span>
             </div>
           </div>
 
-          <nav className="p-2 space-y-1 mt-1">
-            <button
-              onClick={() => setVistaActiva('ventas')}
-              className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
-                vistaActiva === 'ventas' 
-                  ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
-                  : 'text-gray-600 hover:bg-pink-50'
-              }`}
-            >
-              <ShoppingBag size={19} />
-              <span className="text-sm">Ventas (POS)</span>
-            </button>
-
-            <button
-              onClick={() => setVistaActiva('inventario')}
-              className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
-                vistaActiva === 'inventario' 
-                  ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
-                  : 'text-gray-600 hover:bg-pink-50'
-              }`}
-            >
-              <Package size={19} />
-              <span className="text-sm">Inventario</span>
-            </button>
-
-            <button
-              onClick={() => setVistaActiva('agregar')}
-              className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
-                vistaActiva === 'agregar' 
-                  ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
-                  : 'text-gray-600 hover:bg-pink-50'
-              }`}
-            >
-              <PlusCircle size={19} />
-              <span className="text-sm">Agregar Prod.</span>
-            </button>
-
-            <button
-              onClick={() => setVistaActiva('promociones')}
-              className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
-                vistaActiva === 'promociones' 
-                  ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
-                  : 'text-gray-600 hover:bg-pink-50'
-              }`}
-            >
-              <Tag size={19} />
-              <span className="text-sm">Promociones</span>
-            </button>
-
-            <div className="pt-1.5 my-1.5 border-t border-pink-100 space-y-1">
-              <button
-                onClick={() => setVistaActiva('calendario')}
-                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
-                  vistaActiva === 'calendario' 
-                    ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
-                    : 'text-gray-600 hover:bg-pink-50'
-                }`}
-              >
-                <Calendar size={19} />
-                <span className="text-sm">Calendario Entregas</span>
-              </button>
-
-              <button
-                onClick={() => setVistaActiva('pedidos')}
-                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
-                  vistaActiva === 'pedidos' 
-                    ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
-                    : 'text-gray-600 hover:bg-pink-50'
-                }`}
-              >
-                <ClipboardList size={19} />
-                <span className="text-sm">Registrar Pedido</span>
-              </button>
+          <div className="flex items-center gap-1.5">
+            <div className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 ${
+              esOnline ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-amber-50 text-amber-900 border border-amber-200'
+            }`}>
+              {esOnline ? <Wifi size={12} /> : <WifiOff size={12} />}
+              <span>{esOnline ? 'Online' : 'Offline'}</span>
+              {colaOffline.length > 0 && <span>({colaOffline.length})</span>}
             </div>
 
-            <div className="pt-1.5 my-1.5 border-t border-pink-100 space-y-1">
-              <button
-                onClick={() => setVistaActiva('finanzas')}
-                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
-                  vistaActiva === 'finanzas' 
-                    ? 'bg-purple-800 text-white shadow-sm font-semibold' 
-                    : 'text-purple-900 bg-purple-50/60 hover:bg-purple-100'
-                }`}
-              >
-                <Wallet size={19} />
-                <span className="text-sm">Finanzas y Fondos</span>
-              </button>
+            <button
+              onClick={recargarDatos}
+              className="p-1.5 rounded-lg bg-pink-50 text-purple-900 border border-pink-200"
+              title="Sincronizar Datos"
+            >
+              <RefreshCw size={14} className={cargando || sincronizando ? 'animate-spin' : ''} />
+            </button>
+          </div>
+        </header>
+      )}
 
-              <button
-                onClick={() => setVistaActiva('tickets')}
-                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
-                  vistaActiva === 'tickets' 
-                    ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
-                    : 'text-gray-600 hover:bg-pink-50'
-                }`}
-              >
-                <Receipt size={19} />
-                <span className="text-sm">Tickets</span>
-              </button>
-
-              <button
-                onClick={() => setVistaActiva('cortes')}
-                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
-                  vistaActiva === 'cortes' 
-                    ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
-                    : 'text-gray-600 hover:bg-pink-50'
-                }`}
-              >
-                <BarChart3 size={19} />
-                <span className="text-sm">Cortes de Caja</span>
-              </button>
-
-              <button
-                onClick={() => setVistaActiva('analiticas')}
-                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
-                  vistaActiva === 'analiticas' 
-                    ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
-                    : 'text-gray-600 hover:bg-pink-50'
-                }`}
-              >
-                <TrendingUp size={19} />
-                <span className="text-sm">Analíticas / Surtir</span>
-              </button>
+      {/* SIDEBAR DE NAVEGACIÓN (SOLO TABLET Y ESCRITORIO) */}
+      {!esPantallaMovil && (
+        <aside className="w-56 bg-white border-r border-pink-100 flex flex-col justify-between shadow-sm z-10 shrink-0">
+          <div className="overflow-y-auto">
+            <div className="p-4 flex items-center gap-2 border-b border-pink-100">
+              <div className="w-10 h-10 rounded-full bg-destellos-lilac flex items-center justify-center text-white font-bold shadow-inner shrink-0">
+                <Sparkles size={20} />
+              </div>
+              <div>
+                <h1 className="font-bold text-base leading-tight text-destellos-dark">Destellos de Oro</h1>
+                <span className="text-xs text-destellos-gold font-medium">POS & Finanzas</span>
+              </div>
             </div>
-          </nav>
-        </div>
 
-        <div className="p-2.5 border-t border-pink-100 space-y-2">
-          <div className={`p-2 rounded-xl text-xs font-bold flex items-center gap-2 ${
-            esOnline ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-amber-50 text-amber-900 border border-amber-200'
-          }`}>
-            {esOnline ? <Wifi size={15} className="shrink-0" /> : <WifiOff size={15} className="shrink-0" />}
-            <div className="leading-tight">
-              <span>{esOnline ? 'En línea' : 'Modo Offline'}</span>
-              {colaOffline.length > 0 && (
-                <span className="block text-[10px] font-normal">
-                  {colaOffline.length} {colaOffline.length === 1 ? 'cambio pendiente' : 'cambios pendientes'}
-                </span>
+            <nav className="p-2 space-y-1 mt-1">
+              <button
+                onClick={() => setVistaActiva('ventas')}
+                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                  vistaActiva === 'ventas' 
+                    ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                    : 'text-gray-600 hover:bg-pink-50'
+                }`}
+              >
+                <ShoppingBag size={19} />
+                <span className="text-sm">Ventas (POS)</span>
+              </button>
+
+              <button
+                onClick={() => setVistaActiva('inventario')}
+                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                  vistaActiva === 'inventario' 
+                    ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                    : 'text-gray-600 hover:bg-pink-50'
+                }`}
+              >
+                <Package size={19} />
+                <span className="text-sm">Inventario</span>
+              </button>
+
+              <button
+                onClick={() => setVistaActiva('agregar')}
+                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                  vistaActiva === 'agregar' 
+                    ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                    : 'text-gray-600 hover:bg-pink-50'
+                }`}
+              >
+                <PlusCircle size={19} />
+                <span className="text-sm">Agregar Prod.</span>
+              </button>
+
+              <button
+                onClick={() => setVistaActiva('promociones')}
+                className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                  vistaActiva === 'promociones' 
+                    ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                    : 'text-gray-600 hover:bg-pink-50'
+                }`}
+              >
+                <Tag size={19} />
+                <span className="text-sm">Promociones</span>
+              </button>
+
+              <div className="pt-1.5 my-1.5 border-t border-pink-100 space-y-1">
+                <button
+                  onClick={() => setVistaActiva('calendario')}
+                  className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                    vistaActiva === 'calendario' 
+                      ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                      : 'text-gray-600 hover:bg-pink-50'
+                  }`}
+                >
+                  <Calendar size={19} />
+                  <span className="text-sm">Calendario Entregas</span>
+                </button>
+
+                <button
+                  onClick={() => setVistaActiva('pedidos')}
+                  className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                    vistaActiva === 'pedidos' 
+                      ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                      : 'text-gray-600 hover:bg-pink-50'
+                  }`}
+                >
+                  <ClipboardList size={19} />
+                  <span className="text-sm">Registrar Pedido</span>
+                </button>
+              </div>
+
+              <div className="pt-1.5 my-1.5 border-t border-pink-100 space-y-1">
+                <button
+                  onClick={() => setVistaActiva('finanzas')}
+                  className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                    vistaActiva === 'finanzas' 
+                      ? 'bg-purple-800 text-white shadow-sm font-semibold' 
+                      : 'text-purple-900 bg-purple-50/60 hover:bg-purple-100'
+                  }`}
+                >
+                  <Wallet size={19} />
+                  <span className="text-sm">Finanzas y Fondos</span>
+                </button>
+
+                <button
+                  onClick={() => setVistaActiva('tickets')}
+                  className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                    vistaActiva === 'tickets' 
+                      ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                      : 'text-gray-600 hover:bg-pink-50'
+                  }`}
+                >
+                  <Receipt size={19} />
+                  <span className="text-sm">Tickets</span>
+                </button>
+
+                <button
+                  onClick={() => setVistaActiva('cortes')}
+                  className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                    vistaActiva === 'cortes' 
+                      ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                      : 'text-gray-600 hover:bg-pink-50'
+                  }`}
+                >
+                  <BarChart3 size={19} />
+                  <span className="text-sm">Cortes de Caja</span>
+                </button>
+
+                <button
+                  onClick={() => setVistaActiva('analiticas')}
+                  className={`w-full flex items-center gap-3 p-2.5 rounded-xl font-medium transition-all cursor-pointer ${
+                    vistaActiva === 'analiticas' 
+                      ? 'bg-destellos-lilac text-purple-950 shadow-sm font-semibold' 
+                      : 'text-gray-600 hover:bg-pink-50'
+                  }`}
+                >
+                  <TrendingUp size={19} />
+                  <span className="text-sm">Analíticas / Surtir</span>
+                </button>
+              </div>
+            </nav>
+          </div>
+
+          <div className="p-2.5 border-t border-pink-100 space-y-2">
+            <div className={`p-2 rounded-xl text-xs font-bold flex items-center gap-2 ${
+              esOnline ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-amber-50 text-amber-900 border border-amber-200'
+            }`}>
+              {esOnline ? <Wifi size={15} className="shrink-0" /> : <WifiOff size={15} className="shrink-0" />}
+              <div className="leading-tight">
+                <span>{esOnline ? 'En línea' : 'Modo Offline'}</span>
+                {colaOffline.length > 0 && (
+                  <span className="block text-[10px] font-normal">
+                    {colaOffline.length} {colaOffline.length === 1 ? 'cambio pendiente' : 'cambios pendientes'}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <button 
+              onClick={recargarDatos}
+              className="w-full flex items-center justify-center gap-2 p-2 text-xs font-semibold text-gray-600 hover:text-destellos-dark hover:bg-pink-50 rounded-lg cursor-pointer"
+            >
+              {colaOffline.length > 0 ? (
+                <CloudUpload size={15} className={sincronizando ? 'animate-bounce text-purple-700' : 'text-purple-700'} />
+              ) : (
+                <RefreshCw size={15} className={cargando || sincronizando ? 'animate-spin' : ''} />
               )}
-            </div>
+              <span>
+                {sincronizando ? 'Subiendo datos...' : colaOffline.length > 0 ? `Subir Pendientes (${colaOffline.length})` : 'Sincronizar Datos'}
+              </span>
+            </button>
           </div>
+        </aside>
+      )}
 
-          <button 
-            onClick={recargarDatos}
-            className="w-full flex items-center justify-center gap-2 p-2 text-xs font-semibold text-gray-600 hover:text-destellos-dark hover:bg-pink-50 rounded-lg cursor-pointer"
-          >
-            {colaOffline.length > 0 ? (
-              <CloudUpload size={15} className={sincronizando ? 'animate-bounce text-purple-700' : 'text-purple-700'} />
-            ) : (
-              <RefreshCw size={15} className={cargando || sincronizando ? 'animate-spin' : ''} />
-            )}
-            <span>
-              {sincronizando ? 'Subiendo datos...' : colaOffline.length > 0 ? `Subir Pendientes (${colaOffline.length})` : 'Sincronizar Datos'}
-            </span>
-          </button>
-        </div>
-      </aside>
-
-      {/* CONTENIDO PRINCIPAL */}
-      <main className="flex-1 flex overflow-hidden relative">
+      {/* CONTENIDO PRINCIPAL CON ALTURA FLEXIBLE SEGURA (min-h-0) */}
+      <main className="flex-1 min-h-0 flex overflow-hidden relative w-full">
         
         {/* ==================== MÓDULO 1: VENTAS (POS) ==================== */}
         {vistaActiva === 'ventas' && (
-          <div className="flex-1 flex flex-col md:flex-row overflow-hidden w-full">
+          <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden w-full">
             
-            {/* SELECTOR DE PESTAÑA MÓVIL (CATÁLOGO VS TICKET) */}
-            <div className="md:hidden grid grid-cols-2 gap-1.5 p-2 bg-white border-b border-pink-100 shrink-0">
-              <button
-                type="button"
-                onClick={() => setSubVistaVentasMovil('catalogo')}
-                className={`py-2 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 ${
-                  subVistaVentasMovil === 'catalogo'
-                    ? 'bg-purple-800 text-white shadow-2xs'
-                    : 'bg-pink-50/70 text-gray-600'
-                }`}
-              >
-                <Package size={15} /> Catálogo Productos
-              </button>
-              <button
-                type="button"
-                onClick={() => setSubVistaVentasMovil('carrito')}
-                className={`py-2 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 ${
-                  subVistaVentasMovil === 'carrito'
-                    ? 'bg-purple-800 text-white shadow-2xs'
-                    : 'bg-pink-50/70 text-gray-600'
-                }`}
-              >
-                <ShoppingBag size={15} /> Ticket ({totalPiezasCarrito}) • ${calculoCarrito.totalFinal.toFixed(0)}
-              </button>
-            </div>
-
-            {/* IZQUIERDA: CARRITO / TICKET EN CURSO (Oculto en móvil si está viendo el catálogo) */}
-            <div className={`${
-              subVistaVentasMovil === 'carrito' ? 'flex' : 'hidden'
-            } md:flex w-full md:w-5/12 lg:w-4/12 bg-white border-r border-pink-100 flex-col flex-1 md:h-full shadow-sm overflow-hidden`}>
-              <div className="p-3.5 border-b border-pink-100 flex justify-between items-center bg-pink-50/40 shrink-0">
-                <h2 className="font-bold text-base text-gray-800">Ticket en Curso</h2>
-                {carrito.length > 0 && (
-                  <button 
-                    onClick={() => setCarrito([])}
-                    className="text-xs text-red-500 hover:underline flex items-center gap-1 cursor-pointer"
-                  >
-                    <Trash2 size={14} /> Vaciar
-                  </button>
-                )}
+            {/* BARRA SUPERIOR DE PESTAÑAS EN MÓVIL: CATÁLOGO PRIMERO, TICKET SEGUNDO */}
+            {esPantallaMovil && (
+              <div className="grid grid-cols-2 gap-1.5 p-2 bg-white border-b border-pink-100 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setSubVistaVentasMovil('catalogo')}
+                  className={`py-2.5 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer ${
+                    subVistaVentasMovil === 'catalogo'
+                      ? 'bg-purple-800 text-white shadow-2xs'
+                      : 'bg-pink-50/70 text-gray-600'
+                  }`}
+                >
+                  <Package size={15} /> Catálogo ({productosFiltrados.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSubVistaVentasMovil('carrito')}
+                  className={`py-2.5 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer ${
+                    subVistaVentasMovil === 'carrito'
+                      ? 'bg-purple-800 text-white shadow-2xs'
+                      : 'bg-pink-50/70 text-purple-950 border border-pink-200'
+                  }`}
+                >
+                  <ShoppingBag size={15} /> Ticket ({totalPiezasCarrito}) • ${calculoCarrito.totalFinal.toFixed(0)}
+                </button>
               </div>
+            )}
 
-              <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                {carrito.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-gray-400 text-center p-4">
-                    <ShoppingBag size={40} className="mb-2 opacity-30" />
-                    <p className="text-sm">Toca cualquier producto del catálogo para agregarlo a la cuenta</p>
+            {/* IZQUIERDA: CARRITO / TICKET EN CURSO */}
+            {(!esPantallaMovil || subVistaVentasMovil === 'carrito') && (
+              <div className="w-full md:w-5/12 lg:w-4/12 bg-white border-r border-pink-100 flex flex-col flex-1 md:flex-initial min-h-0 md:h-full shadow-sm overflow-hidden">
+                <div className="p-3 border-b border-pink-100 flex justify-between items-center bg-pink-50/40 shrink-0">
+                  <h2 className="font-bold text-base text-gray-800">Ticket en Curso</h2>
+                  <div className="flex items-center gap-3">
+                    {esPantallaMovil && (
+                      <button
+                        type="button"
+                        onClick={() => setSubVistaVentasMovil('catalogo')}
+                        className="text-xs font-bold text-purple-800 bg-purple-100 px-2.5 py-1 rounded-lg"
+                      >
+                        + Agregar más productos
+                      </button>
+                    )}
+                    {carrito.length > 0 && (
+                      <button 
+                        onClick={() => setCarrito([])}
+                        className="text-xs text-red-500 hover:underline flex items-center gap-1 cursor-pointer"
+                      >
+                        <Trash2 size={14} /> Vaciar
+                      </button>
+                    )}
                   </div>
-                ) : (
-                  carrito.map(item => (
-                    <div key={item.id} className="flex items-center justify-between p-2.5 bg-destellos-pink/60 rounded-xl border border-pink-100">
-                      <div className="flex-1 pr-2">
-                        <p className="font-semibold text-sm text-gray-800 leading-snug">{item.nombre_producto}</p>
-                        <p className="text-xs text-gray-500">
-                          ${item.precio_publico} c/u
-                          {item.tematica ? ` • ${item.tematica}` : ''}
-                        </p>
-                      </div>
-                      
-                      <div className="flex items-center gap-2">
-                        <button 
-                          onClick={() => cambiarCantidadCarrito(item.id, -1, item.cantidad)}
-                          className="w-8 h-8 rounded-lg bg-white border border-pink-200 font-bold text-gray-700 active:scale-95"
-                        >-</button>
-                        <span className="w-6 text-center font-bold text-sm">{item.qty}</span>
-                        <button 
-                          onClick={() => cambiarCantidadCarrito(item.id, 1, item.cantidad)}
-                          className="w-8 h-8 rounded-lg bg-white border border-pink-200 font-bold text-gray-700 active:scale-95"
-                        >+</button>
-                      </div>
+                </div>
 
-                      <div className="w-16 text-right font-bold text-sm text-gray-900">
-                        ${(item.precio_publico * item.qty).toFixed(0)}
-                      </div>
+                <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
+                  {carrito.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-gray-400 text-center p-4">
+                      <ShoppingBag size={40} className="mb-2 opacity-30" />
+                      <p className="text-sm mb-3">Toca cualquier producto del catálogo para agregarlo a la cuenta</p>
+                      {esPantallaMovil && (
+                        <button
+                          type="button"
+                          onClick={() => setSubVistaVentasMovil('catalogo')}
+                          className="px-4 py-2.5 bg-purple-700 text-white rounded-xl text-xs font-bold shadow-xs"
+                        >
+                          Ir al Catálogo de Productos
+                        </button>
+                      )}
                     </div>
-                  ))
-                )}
+                  ) : (
+                    carrito.map(item => (
+                      <div key={item.id} className="flex items-center justify-between p-2.5 bg-destellos-pink/60 rounded-xl border border-pink-100">
+                        <div className="flex-1 pr-2">
+                          <p className="font-semibold text-sm text-gray-800 leading-snug">{item.nombre_producto}</p>
+                          <p className="text-xs text-gray-500">
+                            ${item.precio_publico} c/u
+                            {item.tematica ? ` • ${item.tematica}` : ''}
+                          </p>
+                        </div>
+                        
+                        <div className="flex items-center gap-2">
+                          <button 
+                            onClick={() => cambiarCantidadCarrito(item.id, -1, item.cantidad)}
+                            className="w-8 h-8 rounded-lg bg-white border border-pink-200 font-bold text-gray-700 active:scale-95"
+                          >-</button>
+                          <span className="w-6 text-center font-bold text-sm">{item.qty}</span>
+                          <button 
+                            onClick={() => cambiarCantidadCarrito(item.id, 1, item.cantidad)}
+                            className="w-8 h-8 rounded-lg bg-white border border-pink-200 font-bold text-gray-700 active:scale-95"
+                          >+</button>
+                        </div>
 
-                {calculoCarrito.detallePromosAplicadas.length > 0 && (
-                  <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 space-y-1">
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800">
-                      <Tag size={13} /> Promociones aplicadas automáticamente:
-                    </div>
-                    {calculoCarrito.detallePromosAplicadas.map((p, idx) => (
-                      <div key={idx} className="flex justify-between text-xs text-emerald-700">
-                        <span>{p.nombre}</span>
-                        <span className="font-bold">-${p.ahorro.toFixed(2)}</span>
+                        <div className="w-16 text-right font-bold text-sm text-gray-900">
+                          ${(item.precio_publico * item.qty).toFixed(0)}
+                        </div>
                       </div>
+                    ))
+                  )}
+
+                  {calculoCarrito.detallePromosAplicadas.length > 0 && (
+                    <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 space-y-1">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800">
+                        <Tag size={13} /> Promociones aplicadas automáticamente:
+                      </div>
+                      {calculoCarrito.detallePromosAplicadas.map((p, idx) => (
+                        <div key={idx} className="flex justify-between text-xs text-emerald-700">
+                          <span>{p.nombre}</span>
+                          <span className="font-bold">-${p.ahorro.toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-3 border-t border-pink-200 bg-white space-y-2 shrink-0">
+                  <div>
+                    <span className="block text-[11px] font-bold text-gray-500 mb-1">Método de Pago:</span>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {METODOS_PAGO.map(m => {
+                        const Icono = m.icon
+                        const activo = metodoPago === m.id
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => setMetodoPago(m.id)}
+                            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                              activo 
+                                ? 'bg-purple-50 border-purple-600 text-purple-900' 
+                                : 'border-pink-100 text-gray-500 hover:bg-pink-50/50'
+                            }`}
+                          >
+                            <Icono size={15} className="mb-0.5" />
+                            {m.label}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {calculoCarrito.descuentoPromociones > 0 && (
+                    <div className="flex justify-between items-center text-xs text-emerald-700 font-semibold">
+                      <span>Ahorro por Promoción:</span>
+                      <span>-${calculoCarrito.descuentoPromociones.toFixed(2)}</span>
+                    </div>
+                  )}
+
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-gray-500">Descuento Extra ($):</span>
+                    <input 
+                      type="number" 
+                      min="0"
+                      value={descuentoManual}
+                      onChange={e => setDescuentoManual(e.target.value)}
+                      className="w-24 border border-pink-200 rounded-lg px-2 py-1 text-right font-medium"
+                    />
+                  </div>
+
+                  {metodoPago === 'Efectivo' && carrito.length > 0 && (
+                    <div className="p-2 rounded-xl bg-pink-50/60 border border-pink-100 space-y-1.5">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-gray-600 font-medium">Pago con ($):</span>
+                        <input
+                          type="number"
+                          placeholder={calculoCarrito.totalFinal.toString()}
+                          value={montoRecibido}
+                          onChange={e => setMontoRecibido(e.target.value)}
+                          className="w-24 bg-white border border-pink-200 rounded-lg px-2 py-1 text-right font-bold text-gray-800"
+                        />
+                      </div>
+                      <div className="flex gap-1 justify-end">
+                        {[50, 100, 200, 500].map(billete => (
+                          <button
+                            key={billete}
+                            type="button"
+                            onClick={() => setMontoRecibido(billete.toString())}
+                            className="px-2 py-0.5 bg-white border border-pink-200 rounded text-[11px] font-bold text-purple-800 hover:bg-purple-50 cursor-pointer"
+                          >
+                            ${billete}
+                          </button>
+                        ))}
+                      </div>
+                      {Number(montoRecibido) >= calculoCarrito.totalFinal && (
+                        <div className="flex justify-between items-center text-xs pt-1 border-t border-pink-100">
+                          <span className="font-bold text-emerald-800">Cambio a devolver:</span>
+                          <span className="font-extrabold text-sm text-emerald-700">${cambioCliente.toFixed(2)}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex justify-between items-baseline border-t border-pink-100 pt-1">
+                    <span className="text-sm font-bold text-gray-700">Total a Cobrar:</span>
+                    <span className="text-2xl font-extrabold text-purple-900">${calculoCarrito.totalFinal.toFixed(2)}</span>
+                  </div>
+
+                  <button
+                    onClick={cobrarVenta}
+                    disabled={carrito.length === 0 || procesandoVenta}
+                    className="w-full py-3 rounded-xl bg-purple-700 hover:bg-purple-800 disabled:bg-gray-300 text-white font-bold text-base shadow-md active:scale-[0.99] transition-all cursor-pointer"
+                  >
+                    {procesandoVenta ? 'Guardando...' : `Cobrar (${metodoPago})`}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* DERECHA: CATÁLOGO DE PRODUCTOS (Visible siempre en Tablet/PC y por defecto en Móvil) */}
+            {(!esPantallaMovil || subVistaVentasMovil === 'catalogo') && (
+              <div className="flex-1 min-h-0 flex flex-col h-full overflow-hidden p-2.5 md:p-4 relative">
+                <div className="space-y-2 mb-2.5 shrink-0">
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-3 top-2.5 text-gray-400" size={17} />
+                      <input
+                        type="text"
+                        placeholder="Buscar nombre, código o temática..."
+                        value={busqueda}
+                        onChange={e => setBusqueda(e.target.value)}
+                        className="w-full pl-9 pr-8 py-2 bg-white border border-pink-200 rounded-xl text-xs md:text-sm shadow-xs focus:outline-none focus:ring-2 focus:ring-purple-200"
+                      />
+                      {busqueda && (
+                        <button
+                          type="button"
+                          onClick={() => setBusqueda('')}
+                          className="absolute right-2 top-2 p-1 rounded-full bg-pink-100 hover:bg-pink-200 text-purple-900 cursor-pointer"
+                          title="Borrar búsqueda"
+                        >
+                          <X size={13} />
+                        </button>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setOcultarAgotados(!ocultarAgotados)}
+                      className={`px-2.5 py-2 rounded-xl text-xs font-bold border whitespace-nowrap transition-all cursor-pointer ${
+                        ocultarAgotados
+                          ? 'bg-emerald-700 text-white border-emerald-700'
+                          : 'bg-white text-gray-600 border-pink-200 hover:bg-pink-50'
+                      }`}
+                    >
+                      {ocultarAgotados ? '✓ Disp.' : 'Sin agotados'}
+                    </button>
+                  </div>
+
+                  <div className="flex gap-1.5 overflow-x-auto pb-1">
+                    {CATEGORIAS.map(cat => (
+                      <button
+                        key={cat}
+                        onClick={() => {
+                          setCategoriaFiltro(cat)
+                          setTematicaFiltro('TODAS')
+                        }}
+                        className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer shrink-0 ${
+                          categoriaFiltro === cat
+                            ? 'bg-purple-800 text-white shadow-xs'
+                            : 'bg-white text-gray-600 border border-pink-200 hover:bg-pink-50'
+                        }`}
+                      >
+                        {cat === 'REPOSTERÍA' ? '🍪 REPOSTERÍA' : cat}
+                      </button>
                     ))}
                   </div>
-                )}
-              </div>
 
-              <div className="p-3.5 border-t border-pink-200 bg-white space-y-2 shrink-0">
-                <div>
-                  <span className="block text-[11px] font-bold text-gray-500 mb-1">Método de Pago:</span>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {METODOS_PAGO.map(m => {
-                      const Icono = m.icon
-                      const activo = metodoPago === m.id
+                  {categoriaFiltro === 'PINES' && (
+                    <div className="flex items-center gap-1.5 overflow-x-auto py-1 px-2.5 bg-purple-50/70 rounded-xl border border-purple-100">
+                      <span className="text-[11px] font-bold text-purple-800 flex items-center gap-1 mr-1 shrink-0">
+                        <Layers size={13} /> Temática:
+                      </span>
+                      <button
+                        onClick={() => setTematicaFiltro('TODAS')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer shrink-0 ${
+                          tematicaFiltro === 'TODAS' ? 'bg-purple-700 text-white' : 'bg-white text-purple-800'
+                        }`}
+                      >
+                        TODAS
+                      </button>
+                      {tematicasPines.length === 0 ? (
+                        <span className="text-[11px] text-gray-400 italic">(Sin temáticas asignadas)</span>
+                      ) : (
+                        tematicasPines.map(tem => (
+                          <button
+                            key={tem}
+                            onClick={() => setTematicaFiltro(tem)}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap cursor-pointer shrink-0 ${
+                              tematicaFiltro === tem ? 'bg-purple-700 text-white' : 'bg-white text-purple-800 hover:bg-purple-100'
+                            }`}
+                          >
+                            {tem}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* GRID DEL CATÁLOGO CON SCROLL GARANTIZADO */}
+                <div className="flex-1 min-h-0 overflow-y-auto pr-1 pb-20 md:pb-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 md:gap-3">
+                    {productosFiltrados.map(prod => {
+                      const agotado = prod.cantidad <= 0
+                      const etiquetaPromo = obtenerEtiquetaPromo(prod)
+                      const enCarritoItem = carrito.find(c => c.id === prod.id)
+
                       return (
-                        <button
-                          key={m.id}
-                          type="button"
-                          onClick={() => setMetodoPago(m.id)}
-                          className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-                            activo 
-                              ? 'bg-purple-50 border-purple-600 text-purple-900' 
-                              : 'border-pink-100 text-gray-500 hover:bg-pink-50/50'
+                        <div
+                          key={prod.id}
+                          onClick={() => !agotado && agregarAlCarrito(prod)}
+                          className={`bg-white p-3 rounded-2xl border flex flex-col justify-between transition-all select-none ${
+                            agotado 
+                              ? 'opacity-55 border-gray-200 cursor-not-allowed' 
+                              : enCarritoItem
+                                ? 'border-purple-600 ring-2 ring-purple-200 shadow-xs cursor-pointer'
+                                : 'border-pink-100 hover:border-purple-300 shadow-xs active:scale-95 cursor-pointer'
                           }`}
                         >
-                          <Icono size={15} className="mb-0.5" />
-                          {m.label}
-                        </button>
+                          <div>
+                            <div className="flex justify-between items-start gap-1 mb-1">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                                prod.categoria === 'REPOSTERÍA' ? 'bg-amber-100 text-amber-900' : 'bg-pink-50 text-purple-800'
+                              }`}>
+                                {prod.codigo || prod.categoria.slice(0, 6)}
+                              </span>
+                              <div className="flex items-center gap-1">
+                                {prod.imagen_url && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setImagenExpandidaId(imagenExpandidaId === prod.id ? null : prod.id)
+                                    }}
+                                    className="text-gray-400 hover:text-purple-700 p-0.5"
+                                    title="Ver foto de apoyo"
+                                  >
+                                    <Eye size={15} />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            <h3 className="font-semibold text-xs md:text-sm text-gray-800 line-clamp-2 my-1">
+                              {prod.nombre_producto}
+                            </h3>
+
+                            {prod.tematica && (
+                              <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 mb-1">
+                                ✨ {prod.tematica}
+                              </span>
+                            )}
+
+                            {etiquetaPromo && (
+                              <div className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 inline-block mb-1">
+                                🏷️ {etiquetaPromo}
+                              </div>
+                            )}
+
+                            {imagenExpandidaId === prod.id && prod.imagen_url && (
+                              <img 
+                                src={prod.imagen_url} 
+                                alt={prod.nombre_producto} 
+                                className="w-full h-24 object-cover rounded-lg my-1.5 border border-pink-100"
+                              />
+                            )}
+                          </div>
+
+                          <div className="mt-2 pt-2 border-t border-pink-50">
+                            <div className="flex items-center justify-between">
+                              <span className="font-extrabold text-sm md:text-base text-gray-900">
+                                ${prod.precio_publico}
+                              </span>
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                agotado 
+                                  ? 'bg-red-100 text-red-700' 
+                                  : prod.cantidad <= 2 
+                                    ? 'bg-amber-100 text-amber-800' 
+                                    : 'bg-emerald-100 text-emerald-800'
+                              }`}>
+                                {agotado ? 'AGOTADO' : `${prod.cantidad} disp.`}
+                              </span>
+                            </div>
+
+                            {/* Controles rápidos +/- directos en la tarjeta cuando ya está en el ticket */}
+                            {enCarritoItem && (
+                              <div
+                                onClick={e => e.stopPropagation()}
+                                className="mt-2 pt-1.5 border-t border-purple-100 flex items-center justify-between bg-purple-50/70 rounded-xl px-2 py-1"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => cambiarCantidadCarrito(prod.id, -1, prod.cantidad)}
+                                  className="w-7 h-7 rounded-lg bg-white border border-purple-200 font-extrabold text-purple-900"
+                                >
+                                  -
+                                </button>
+                                <span className="text-xs font-extrabold text-purple-950">
+                                  {enCarritoItem.qty} en ticket
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => cambiarCantidadCarrito(prod.id, 1, prod.cantidad)}
+                                  className="w-7 h-7 rounded-lg bg-purple-700 text-white font-extrabold"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       )
                     })}
                   </div>
                 </div>
 
-                {calculoCarrito.descuentoPromociones > 0 && (
-                  <div className="flex justify-between items-center text-xs text-emerald-700 font-semibold">
-                    <span>Ahorro por Promoción:</span>
-                    <span>-${calculoCarrito.descuentoPromociones.toFixed(2)}</span>
-                  </div>
-                )}
-
-                <div className="flex justify-between items-center text-xs">
-                  <span className="text-gray-500">Descuento Extra ($):</span>
-                  <input 
-                    type="number" 
-                    min="0"
-                    value={descuentoManual}
-                    onChange={e => setDescuentoManual(e.target.value)}
-                    className="w-24 border border-pink-200 rounded-lg px-2 py-1 text-right font-medium"
-                  />
-                </div>
-
-                {metodoPago === 'Efectivo' && carrito.length > 0 && (
-                  <div className="p-2.5 rounded-xl bg-pink-50/60 border border-pink-100 space-y-1.5">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-gray-600 font-medium">Pago con ($):</span>
-                      <input
-                        type="number"
-                        placeholder={calculoCarrito.totalFinal.toString()}
-                        value={montoRecibido}
-                        onChange={e => setMontoRecibido(e.target.value)}
-                        className="w-24 bg-white border border-pink-200 rounded-lg px-2 py-1 text-right font-bold text-gray-800"
-                      />
-                    </div>
-                    <div className="flex gap-1 justify-end">
-                      {[50, 100, 200, 500].map(billete => (
-                        <button
-                          key={billete}
-                          type="button"
-                          onClick={() => setMontoRecibido(billete.toString())}
-                          className="px-2 py-0.5 bg-white border border-pink-200 rounded text-[11px] font-bold text-purple-800 hover:bg-purple-50 cursor-pointer"
-                        >
-                          ${billete}
-                        </button>
-                      ))}
-                    </div>
-                    {Number(montoRecibido) >= calculoCarrito.totalFinal && (
-                      <div className="flex justify-between items-center text-xs pt-1 border-t border-pink-100">
-                        <span className="font-bold text-emerald-800">Cambio a devolver:</span>
-                        <span className="font-extrabold text-sm text-emerald-700">${cambioCliente.toFixed(2)}</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                <div className="flex justify-between items-baseline border-t border-pink-100 pt-1.5">
-                  <span className="text-sm font-bold text-gray-700">Total a Cobrar:</span>
-                  <span className="text-2xl font-extrabold text-purple-900">${calculoCarrito.totalFinal.toFixed(2)}</span>
-                </div>
-
-                <button
-                  onClick={cobrarVenta}
-                  disabled={carrito.length === 0 || procesandoVenta}
-                  className="w-full py-3 rounded-xl bg-purple-700 hover:bg-purple-800 disabled:bg-gray-300 text-white font-bold text-base shadow-md active:scale-[0.99] transition-all cursor-pointer"
-                >
-                  {procesandoVenta ? 'Guardando...' : `Cobrar (${metodoPago})`}
-                </button>
-              </div>
-            </div>
-
-            {/* DERECHA: CATÁLOGO DE PRODUCTOS (Con botón X en buscador y barra flotante en móvil) */}
-            <div className={`${
-              subVistaVentasMovil === 'catalogo' ? 'flex' : 'hidden'
-            } md:flex flex-1 flex-col h-full overflow-hidden p-3 md:p-4 relative`}>
-              <div className="space-y-2.5 mb-3 shrink-0">
-                <div className="flex gap-2">
-                  {/* Buscador con botón X de borrado rápido */}
-                  <div className="relative flex-1">
-                    <Search className="absolute left-3.5 top-2.5 text-gray-400" size={18} />
-                    <input
-                      type="text"
-                      placeholder="Buscar nombre, código o temática..."
-                      value={busqueda}
-                      onChange={e => setBusqueda(e.target.value)}
-                      className="w-full pl-10 pr-9 py-2 bg-white border border-pink-200 rounded-xl text-sm shadow-xs focus:outline-none focus:ring-2 focus:ring-purple-200"
-                    />
-                    {busqueda && (
-                      <button
-                        type="button"
-                        onClick={() => setBusqueda('')}
-                        className="absolute right-2.5 top-2 p-1 rounded-full bg-pink-100 hover:bg-pink-200 text-purple-900 cursor-pointer"
-                        title="Borrar búsqueda"
-                      >
-                        <X size={14} />
-                      </button>
-                    )}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setOcultarAgotados(!ocultarAgotados)}
-                    className={`px-3 py-2 rounded-xl text-xs font-bold border whitespace-nowrap transition-all cursor-pointer ${
-                      ocultarAgotados
-                        ? 'bg-emerald-700 text-white border-emerald-700'
-                        : 'bg-white text-gray-600 border-pink-200 hover:bg-pink-50'
-                    }`}
-                  >
-                    {ocultarAgotados ? '✓ Disp.' : 'Sin agotados'}
-                  </button>
-                </div>
-
-                <div className="flex gap-1.5 overflow-x-auto pb-1">
-                  {CATEGORIAS.map(cat => (
+                {/* BARRA FLOTANTE INFERIOR EN TELÉFONO PARA IR A COBRAR */}
+                {esPantallaMovil && carrito.length > 0 && (
+                  <div className="absolute bottom-2.5 left-2.5 right-2.5 z-20">
                     <button
-                      key={cat}
-                      onClick={() => {
-                        setCategoriaFiltro(cat)
-                        setTematicaFiltro('TODAS')
-                      }}
-                      className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
-                        categoriaFiltro === cat
-                          ? 'bg-purple-800 text-white shadow-xs'
-                          : 'bg-white text-gray-600 border border-pink-200 hover:bg-pink-50'
-                      }`}
+                      type="button"
+                      onClick={() => setSubVistaVentasMovil('carrito')}
+                      className="w-full py-3 px-4 rounded-2xl bg-purple-900 text-white shadow-xl flex items-center justify-between font-bold text-xs"
                     >
-                      {cat === 'REPOSTERÍA' ? '🍪 REPOSTERÍA' : cat}
+                      <span className="flex items-center gap-2">
+                        <ShoppingBag size={17} />
+                        Ver Ticket ({totalPiezasCarrito} {totalPiezasCarrito === 1 ? 'pieza' : 'piezas'})
+                      </span>
+                      <span className="text-sm font-extrabold bg-white text-purple-950 px-3 py-1 rounded-xl">
+                        Cobrar ${calculoCarrito.totalFinal.toFixed(2)} →
+                      </span>
                     </button>
-                  ))}
-                </div>
-
-                {categoriaFiltro === 'PINES' && (
-                  <div className="flex items-center gap-1.5 overflow-x-auto py-1 px-2.5 bg-purple-50/70 rounded-xl border border-purple-100">
-                    <span className="text-[11px] font-bold text-purple-800 flex items-center gap-1 mr-1 shrink-0">
-                      <Layers size={13} /> Temática:
-                    </span>
-                    <button
-                      onClick={() => setTematicaFiltro('TODAS')}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
-                        tematicaFiltro === 'TODAS' ? 'bg-purple-700 text-white' : 'bg-white text-purple-800'
-                      }`}
-                    >
-                      TODAS
-                    </button>
-                    {tematicasPines.length === 0 ? (
-                      <span className="text-[11px] text-gray-400 italic">(Sin temáticas asignadas)</span>
-                    ) : (
-                      tematicasPines.map(tem => (
-                        <button
-                          key={tem}
-                          onClick={() => setTematicaFiltro(tem)}
-                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap cursor-pointer ${
-                            tematicaFiltro === tem ? 'bg-purple-700 text-white' : 'bg-white text-purple-800 hover:bg-purple-100'
-                          }`}
-                        >
-                          {tem}
-                        </button>
-                      ))
-                    )}
                   </div>
                 )}
               </div>
-
-              <div className="flex-1 overflow-y-auto pr-1 pb-16 md:pb-2">
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 md:gap-3">
-                  {productosFiltrados.map(prod => {
-                    const agotado = prod.cantidad <= 0
-                    const etiquetaPromo = obtenerEtiquetaPromo(prod)
-                    const enCarritoItem = carrito.find(c => c.id === prod.id)
-
-                    return (
-                      <div
-                        key={prod.id}
-                        onClick={() => !agotado && agregarAlCarrito(prod)}
-                        className={`bg-white p-3 rounded-2xl border flex flex-col justify-between transition-all select-none ${
-                          agotado 
-                            ? 'opacity-55 border-gray-200 cursor-not-allowed' 
-                            : enCarritoItem
-                              ? 'border-purple-500 ring-2 ring-purple-200 shadow-xs active:scale-95 cursor-pointer'
-                              : 'border-pink-100 hover:border-purple-300 shadow-xs active:scale-95 cursor-pointer'
-                        }`}
-                      >
-                        <div>
-                          <div className="flex justify-between items-start gap-1 mb-1">
-                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
-                              prod.categoria === 'REPOSTERÍA' ? 'bg-amber-100 text-amber-900' : 'bg-pink-50 text-purple-800'
-                            }`}>
-                              {prod.codigo || prod.categoria.slice(0, 6)}
-                            </span>
-                            <div className="flex items-center gap-1">
-                              {enCarritoItem && (
-                                <span className="px-1.5 py-0.5 rounded-full bg-purple-800 text-white text-[10px] font-extrabold">
-                                  {enCarritoItem.qty} en ticket
-                                </span>
-                              )}
-                              {prod.imagen_url && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    setImagenExpandidaId(imagenExpandidaId === prod.id ? null : prod.id)
-                                  }}
-                                  className="text-gray-400 hover:text-purple-700 p-0.5"
-                                  title="Ver foto de apoyo"
-                                >
-                                  <Eye size={15} />
-                                </button>
-                              )}
-                            </div>
-                          </div>
-
-                          <h3 className="font-semibold text-sm text-gray-800 line-clamp-2 my-1">
-                            {prod.nombre_producto}
-                          </h3>
-
-                          {prod.tematica && (
-                            <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 mb-1">
-                              ✨ {prod.tematica}
-                            </span>
-                          )}
-
-                          {etiquetaPromo && (
-                            <div className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 inline-block mb-1">
-                              🏷️ {etiquetaPromo}
-                            </div>
-                          )}
-
-                          {imagenExpandidaId === prod.id && prod.imagen_url && (
-                            <img 
-                              src={prod.imagen_url} 
-                              alt={prod.nombre_producto} 
-                              className="w-full h-24 object-cover rounded-lg my-1.5 border border-pink-100"
-                            />
-                          )}
-                        </div>
-
-                        <div className="mt-2 pt-2 border-t border-pink-50 flex items-center justify-between">
-                          <span className="font-extrabold text-base text-gray-900">
-                            ${prod.precio_publico}
-                          </span>
-                          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
-                            agotado 
-                              ? 'bg-red-100 text-red-700' 
-                              : prod.cantidad <= 2 
-                                ? 'bg-amber-100 text-amber-800' 
-                                : 'bg-emerald-100 text-emerald-800'
-                          }`}>
-                            {agotado ? 'AGOTADO' : `${prod.cantidad} disp.`}
-                          </span>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-
-              {/* BARRA FLOTANTE INFERIOR EN TELÉFONO CUANDO HAY PRODUCTOS EN EL CARRITO */}
-              {carrito.length > 0 && (
-                <div className="md:hidden absolute bottom-3 left-3 right-3 z-20">
-                  <button
-                    type="button"
-                    onClick={() => setSubVistaVentasMovil('carrito')}
-                    className="w-full py-3 px-4 rounded-2xl bg-purple-900 text-white shadow-lg flex items-center justify-between font-bold text-sm"
-                  >
-                    <span className="flex items-center gap-2">
-                      <ShoppingBag size={18} />
-                      Ver Ticket ({totalPiezasCarrito} {totalPiezasCarrito === 1 ? 'pza' : 'pzas'})
-                    </span>
-                    <span className="text-base font-extrabold bg-white/20 px-3 py-1 rounded-xl">
-                      Cobrar ${calculoCarrito.totalFinal.toFixed(2)} →
-                    </span>
-                  </button>
-                </div>
-              )}
-            </div>
+            )}
           </div>
         )}
 
-        {/* ==================== MÓDULO 2: INVENTARIO (ADAPTADO A MÓVIL Y TABLET) ==================== */}
+        {/* ==================== MÓDULO 2: INVENTARIO ==================== */}
         {vistaActiva === 'inventario' && (
-          <div className="flex-1 flex flex-col p-3 md:p-6 overflow-hidden w-full">
+          <div className="flex-1 min-h-0 flex flex-col p-3 md:p-6 overflow-hidden w-full">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-2.5 mb-3 shrink-0">
               <div>
                 <h2 className="text-xl md:text-2xl font-bold text-gray-800">Control de Inventario</h2>
@@ -2228,7 +2286,6 @@ export default function App() {
               </div>
 
               <div className="flex flex-wrap gap-2">
-                {/* Buscador de Inventario con botón X */}
                 <div className="relative flex-1 min-w-[180px]">
                   <input
                     type="text"
@@ -2272,469 +2329,471 @@ export default function App() {
               </div>
             </div>
 
-            {/* VISTA MÓVIL DE INVENTARIO (TARJETAS FÁCILES DE USAR EN TELÉFONO) */}
-            <div className="md:hidden flex-1 overflow-y-auto space-y-2.5 pr-1">
-              {productosFiltrados.map(prod => {
-                const enEdicion = editandoId === prod.id
-                const ganancia = Number(prod.precio_publico) - Number(prod.costo_produccion)
-                const mostrarFoto = imagenExpandidaId === prod.id
+            {esPantallaMovil ? (
+              /* VISTA MÓVIL DE INVENTARIO (TARJETAS FLUIDAS) */
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-2.5 pr-1">
+                {productosFiltrados.map(prod => {
+                  const enEdicion = editandoId === prod.id
+                  const ganancia = Number(prod.precio_publico) - Number(prod.costo_produccion)
+                  const mostrarFoto = imagenExpandidaId === prod.id
 
-                return (
-                  <div key={prod.id} className="bg-white p-3.5 rounded-2xl border border-pink-100 shadow-2xs space-y-2.5">
-                    {enEdicion ? (
-                      <div className="space-y-2.5">
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-[10px] font-bold text-gray-500">Código</label>
-                            <input
-                              value={formEdicion.codigo || ''}
-                              onChange={e => setFormEdicion({...formEdicion, codigo: e.target.value})}
-                              className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] font-bold text-gray-500">Categoría</label>
-                            <select
-                              value={formEdicion.categoria}
-                              onChange={e => setFormEdicion({...formEdicion, categoria: e.target.value})}
-                              className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs bg-white"
-                            >
-                              {CATEGORIAS.filter(c => c !== 'TODAS').map(c => (
-                                <option key={c} value={c}>{c}</option>
-                              ))}
-                            </select>
-                          </div>
-                        </div>
-
-                        {formEdicion.categoria === 'PINES' && (
-                          <div>
-                            <label className="text-[10px] font-bold text-purple-800">Temática del Pin</label>
-                            <input
-                              type="text"
-                              list="lista-tematicas"
-                              value={formEdicion.tematica || ''}
-                              onChange={e => setFormEdicion({...formEdicion, tematica: e.target.value})}
-                              className="w-full border border-purple-300 rounded-lg px-2 py-1.5 text-xs font-bold text-purple-900"
-                            />
-                          </div>
-                        )}
-
-                        <div>
-                          <label className="text-[10px] font-bold text-gray-500">Nombre del Producto</label>
-                          <input
-                            value={formEdicion.nombre_producto}
-                            onChange={e => setFormEdicion({...formEdicion, nombre_producto: e.target.value})}
-                            className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-3 gap-2">
-                          <div>
-                            <label className="text-[10px] font-bold text-gray-500">Stock</label>
-                            <input
-                              type="number"
-                              value={formEdicion.cantidad}
-                              onChange={e => setFormEdicion({...formEdicion, cantidad: e.target.value})}
-                              className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] font-bold text-gray-500">Costo ($)</label>
-                            <input
-                              type="number"
-                              value={formEdicion.costo_produccion}
-                              onChange={e => setFormEdicion({...formEdicion, costo_produccion: e.target.value})}
-                              className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs text-right"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] font-bold text-gray-500">Precio ($)</label>
-                            <input
-                              type="number"
-                              value={formEdicion.precio_publico}
-                              onChange={e => setFormEdicion({...formEdicion, precio_publico: e.target.value})}
-                              className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs font-bold text-purple-900 text-right"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="flex gap-2 pt-1">
-                          <button
-                            onClick={guardarEdicion}
-                            className="flex-1 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1"
-                          >
-                            <Check size={15} /> Guardar Cambios
-                          </button>
-                          <button
-                            onClick={() => setEditandoId(null)}
-                            className="px-4 py-2 bg-gray-200 text-gray-700 rounded-xl text-xs font-bold"
-                          >
-                            Cancelar
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-1.5 mb-1">
-                              <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-gray-100 text-gray-700">
-                                {prod.codigo || 'S/C'}
-                              </span>
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                prod.categoria === 'REPOSTERÍA' ? 'bg-amber-100 text-amber-900' : 'bg-purple-50 text-purple-800'
-                              }`}>
-                                {prod.categoria}
-                              </span>
-                              {prod.tematica && (
-                                <span className="px-2 py-0.5 rounded-full bg-pink-100 text-pink-900 font-bold text-[10px]">
-                                  ✨ {prod.tematica}
-                                </span>
-                              )}
-                            </div>
-                            <h3 className="font-bold text-sm text-gray-800">{prod.nombre_producto}</h3>
-                          </div>
-
-                          <span className={`px-2.5 py-1 rounded-full text-xs font-extrabold shrink-0 ${
-                            prod.cantidad <= 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-800'
-                          }`}>
-                            {prod.cantidad <= 0 ? 'AGOTADO' : `${prod.cantidad} disp.`}
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-3 gap-2 pt-2 border-t border-pink-50 text-xs">
-                          <div>
-                            <span className="text-gray-400 block text-[10px]">Costo Prod.</span>
-                            <strong className="text-gray-700">${prod.costo_produccion}</strong>
-                          </div>
-                          <div>
-                            <span className="text-gray-400 block text-[10px]">Precio Público</span>
-                            <strong className="text-gray-900 text-sm">${prod.precio_publico}</strong>
-                          </div>
-                          <div>
-                            <span className="text-gray-400 block text-[10px]">Ganancia Base</span>
-                            <strong className="text-emerald-700">${ganancia.toFixed(0)}</strong>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-end gap-2 pt-2 border-t border-pink-50">
-                          <button
-                            onClick={() => setImagenExpandidaId(mostrarFoto ? null : prod.id)}
-                            className="px-3 py-1.5 rounded-xl border border-pink-200 text-xs font-bold text-purple-800 flex items-center gap-1"
-                          >
-                            {mostrarFoto ? <EyeOff size={14} /> : <Eye size={14} />}
-                            Foto
-                          </button>
-                          <button
-                            onClick={() => iniciarEdicion(prod)}
-                            className="px-3 py-1.5 rounded-xl bg-purple-50 text-purple-900 text-xs font-bold flex items-center gap-1"
-                          >
-                            <Edit2 size={14} /> Editar
-                          </button>
-                          <button
-                            onClick={() => eliminarProducto(prod)}
-                            className="p-1.5 rounded-xl text-red-500 border border-red-100"
-                          >
-                            <Trash2 size={15} />
-                          </button>
-                        </div>
-                      </>
-                    )}
-
-                    {mostrarFoto && (
-                      <div className="pt-2 border-t border-pink-100 space-y-2">
-                        {prod.imagen_url ? (
-                          <img src={prod.imagen_url} alt={prod.nombre_producto} className="w-28 h-28 object-cover rounded-xl border mx-auto" />
-                        ) : (
-                          <div className="text-center text-xs text-gray-400 py-3">Sin foto asignada</div>
-                        )}
-                        <div className="flex gap-2">
-                          <label className="flex-1 py-2 bg-purple-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1 cursor-pointer">
-                            <Camera size={14} /> Cámara
-                            <input
-                              type="file"
-                              accept="image/*"
-                              capture="environment"
-                              className="hidden"
-                              onChange={async (e) => {
-                                const url = await comprimirYSubirImagen(e.target.files[0])
-                                if (url) {
-                                  await supabase.from('productos').update({ imagen_url: url }).eq('id', prod.id)
-                                  recargarDatos()
-                                }
-                              }}
-                            />
-                          </label>
-                          <label className="flex-1 py-2 bg-destellos-lilac text-purple-950 rounded-xl text-xs font-bold flex items-center justify-center gap-1 cursor-pointer">
-                            <Image size={14} /> Galería
-                            <input
-                              type="file"
-                              accept="image/*"
-                              className="hidden"
-                              onChange={async (e) => {
-                                const url = await comprimirYSubirImagen(e.target.files[0])
-                                if (url) {
-                                  await supabase.from('productos').update({ imagen_url: url }).eq('id', prod.id)
-                                  recargarDatos()
-                                }
-                              }}
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-
-            {/* VISTA TABLET / ESCRITORIO DE INVENTARIO (TABLA COMPLETA) */}
-            <div className="hidden md:block flex-1 overflow-y-auto bg-white rounded-2xl border border-pink-100 shadow-xs">
-              <table className="w-full text-left border-collapse text-sm">
-                <thead className="bg-pink-50/70 text-gray-600 text-xs uppercase sticky top-0">
-                  <tr>
-                    <th className="p-3">Código</th>
-                    <th className="p-3">Producto</th>
-                    <th className="p-3">Categoría / Temática</th>
-                    <th className="p-3 text-center">Stock</th>
-                    <th className="p-3 text-right">Costo</th>
-                    <th className="p-3 text-right">Precio</th>
-                    <th className="p-3 text-right">Ganancia Base</th>
-                    <th className="p-3 text-center">Foto</th>
-                    <th className="p-3 text-center">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-pink-50">
-                  {productosFiltrados.map(prod => {
-                    const enEdicion = editandoId === prod.id
-                    const ganancia = Number(prod.precio_publico) - Number(prod.costo_produccion)
-                    const mostrarFoto = imagenExpandidaId === prod.id
-
-                    return (
-                      <Fragment key={prod.id}>
-                        <tr className="hover:bg-pink-50/30">
-                          <td className="p-3 font-mono text-xs">
-                            {enEdicion ? (
-                              <input 
-                                value={formEdicion.codigo || ''} 
+                  return (
+                    <div key={prod.id} className="bg-white p-3.5 rounded-2xl border border-pink-100 shadow-2xs space-y-2.5">
+                      {enEdicion ? (
+                        <div className="space-y-2.5">
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-[10px] font-bold text-gray-500">Código</label>
+                              <input
+                                value={formEdicion.codigo || ''}
                                 onChange={e => setFormEdicion({...formEdicion, codigo: e.target.value})}
-                                className="w-20 border rounded px-1.5 py-1"
+                                className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs"
                               />
-                            ) : (prod.codigo || '-')}
-                          </td>
-                          <td className="p-3 font-medium text-gray-800">
-                            {enEdicion ? (
-                              <input 
-                                value={formEdicion.nombre_producto} 
-                                onChange={e => setFormEdicion({...formEdicion, nombre_producto: e.target.value})}
-                                className="w-full border rounded px-2 py-1"
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-bold text-gray-500">Categoría</label>
+                              <select
+                                value={formEdicion.categoria}
+                                onChange={e => setFormEdicion({...formEdicion, categoria: e.target.value})}
+                                className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+                              >
+                                {CATEGORIAS.filter(c => c !== 'TODAS').map(c => (
+                                  <option key={c} value={c}>{c}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          {formEdicion.categoria === 'PINES' && (
+                            <div>
+                              <label className="text-[10px] font-bold text-purple-800">Temática del Pin</label>
+                              <input
+                                type="text"
+                                list="lista-tematicas"
+                                value={formEdicion.tematica || ''}
+                                onChange={e => setFormEdicion({...formEdicion, tematica: e.target.value})}
+                                className="w-full border border-purple-300 rounded-lg px-2 py-1.5 text-xs font-bold text-purple-900"
                               />
-                            ) : prod.nombre_producto}
-                          </td>
-                          <td className="p-3 text-xs">
-                            {enEdicion ? (
-                              <div className="space-y-1">
-                                <select
-                                  value={formEdicion.categoria}
-                                  onChange={e => setFormEdicion({...formEdicion, categoria: e.target.value})}
-                                  className="border rounded px-1.5 py-1 w-full"
-                                >
-                                  {CATEGORIAS.filter(c => c !== 'TODAS').map(c => (
-                                    <option key={c} value={c}>{c}</option>
-                                  ))}
-                                </select>
-                                {formEdicion.categoria === 'PINES' && (
-                                  <input
-                                    type="text"
-                                    list="lista-tematicas"
-                                    placeholder="Temática (ej. GATITOS)"
-                                    value={formEdicion.tematica || ''}
-                                    onChange={e => setFormEdicion({...formEdicion, tematica: e.target.value})}
-                                    className="border border-purple-300 rounded px-1.5 py-1 w-full text-purple-900 font-semibold"
-                                  />
-                                )}
-                              </div>
-                            ) : (
-                              <div className="flex flex-wrap items-center gap-1">
-                                <span className={`px-2 py-0.5 rounded-full font-semibold ${
+                            </div>
+                          )}
+
+                          <div>
+                            <label className="text-[10px] font-bold text-gray-500">Nombre del Producto</label>
+                            <input
+                              value={formEdicion.nombre_producto}
+                              onChange={e => setFormEdicion({...formEdicion, nombre_producto: e.target.value})}
+                              className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2">
+                            <div>
+                              <label className="text-[10px] font-bold text-gray-500">Stock</label>
+                              <input
+                                type="number"
+                                value={formEdicion.cantidad}
+                                onChange={e => setFormEdicion({...formEdicion, cantidad: e.target.value})}
+                                className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-bold text-gray-500">Costo ($)</label>
+                              <input
+                                type="number"
+                                value={formEdicion.costo_produccion}
+                                onChange={e => setFormEdicion({...formEdicion, costo_produccion: e.target.value})}
+                                className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs text-right"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-bold text-gray-500">Precio ($)</label>
+                              <input
+                                type="number"
+                                value={formEdicion.precio_publico}
+                                onChange={e => setFormEdicion({...formEdicion, precio_publico: e.target.value})}
+                                className="w-full border border-pink-200 rounded-lg px-2 py-1.5 text-xs font-bold text-purple-900 text-right"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              onClick={guardarEdicion}
+                              className="flex-1 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1"
+                            >
+                              <Check size={15} /> Guardar Cambios
+                            </button>
+                            <button
+                              onClick={() => setEditandoId(null)}
+                              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-xl text-xs font-bold"
+                            >
+                              Cancelar
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                                <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-gray-100 text-gray-700">
+                                  {prod.codigo || 'S/C'}
+                                </span>
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                                   prod.categoria === 'REPOSTERÍA' ? 'bg-amber-100 text-amber-900' : 'bg-purple-50 text-purple-800'
                                 }`}>
                                   {prod.categoria}
                                 </span>
                                 {prod.tematica && (
-                                  <span className="px-2 py-0.5 rounded-full bg-pink-100 text-pink-900 font-bold text-[11px]">
-                                    {prod.tematica}
+                                  <span className="px-2 py-0.5 rounded-full bg-pink-100 text-pink-900 font-bold text-[10px]">
+                                    ✨ {prod.tematica}
                                   </span>
                                 )}
                               </div>
-                            )}
-                          </td>
-                          <td className="p-3 text-center">
-                            {enEdicion ? (
-                              <input 
-                                type="number"
-                                value={formEdicion.cantidad} 
-                                onChange={e => setFormEdicion({...formEdicion, cantidad: e.target.value})}
-                                className="w-16 border rounded px-1.5 py-1 text-center font-bold"
-                              />
-                            ) : (
-                              <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
-                                prod.cantidad <= 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-800'
-                              }`}>
-                                {prod.cantidad <= 0 ? 'AGOTADO' : prod.cantidad}
-                              </span>
-                            )}
-                          </td>
-                          <td className="p-3 text-right text-gray-500">
-                            {enEdicion ? (
-                              <input 
-                                type="number"
-                                value={formEdicion.costo_produccion} 
-                                onChange={e => setFormEdicion({...formEdicion, costo_produccion: e.target.value})}
-                                className="w-20 border rounded px-1.5 py-1 text-right"
-                              />
-                            ) : `$${prod.costo_produccion}`}
-                          </td>
-                          <td className="p-3 text-right font-bold text-gray-900">
-                            {enEdicion ? (
-                              <input 
-                                type="number"
-                                value={formEdicion.precio_publico} 
-                                onChange={e => setFormEdicion({...formEdicion, precio_publico: e.target.value})}
-                                className="w-20 border rounded px-1.5 py-1 text-right font-bold"
-                              />
-                            ) : `$${prod.precio_publico}`}
-                          </td>
-                          <td className="p-3 text-right font-semibold text-emerald-700">
-                            ${ganancia.toFixed(0)}
-                          </td>
-                          <td className="p-3 text-center">
+                              <h3 className="font-bold text-sm text-gray-800">{prod.nombre_producto}</h3>
+                            </div>
+
+                            <span className={`px-2.5 py-1 rounded-full text-xs font-extrabold shrink-0 ${
+                              prod.cantidad <= 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-800'
+                            }`}>
+                              {prod.cantidad <= 0 ? 'AGOTADO' : `${prod.cantidad} disp.`}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2 pt-2 border-t border-pink-50 text-xs">
+                            <div>
+                              <span className="text-gray-400 block text-[10px]">Costo Prod.</span>
+                              <strong className="text-gray-700">${prod.costo_produccion}</strong>
+                            </div>
+                            <div>
+                              <span className="text-gray-400 block text-[10px]">Precio Público</span>
+                              <strong className="text-gray-900 text-sm">${prod.precio_publico}</strong>
+                            </div>
+                            <div>
+                              <span className="text-gray-400 block text-[10px]">Ganancia Base</span>
+                              <strong className="text-emerald-700">${ganancia.toFixed(0)}</strong>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-end gap-2 pt-2 border-t border-pink-50">
                             <button
                               onClick={() => setImagenExpandidaId(mostrarFoto ? null : prod.id)}
-                              className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
-                                prod.imagen_url 
-                                  ? 'border-purple-200 text-purple-700 hover:bg-purple-50' 
-                                  : 'border-gray-200 text-gray-400 hover:bg-gray-50'
-                              }`}
-                              title="Ver / Editar imagen de apoyo"
+                              className="px-3 py-1.5 rounded-xl border border-pink-200 text-xs font-bold text-purple-800 flex items-center gap-1"
                             >
-                              {mostrarFoto ? <EyeOff size={16} /> : <Eye size={16} />}
+                              {mostrarFoto ? <EyeOff size={14} /> : <Eye size={14} />}
+                              Foto
                             </button>
-                          </td>
-                          <td className="p-3 text-center">
-                            {enEdicion ? (
-                              <div className="flex items-center justify-center gap-1">
-                                <button onClick={guardarEdicion} className="p-1.5 bg-emerald-600 text-white rounded-lg cursor-pointer">
-                                  <Check size={16} />
-                                </button>
-                                <button onClick={() => setEditandoId(null)} className="p-1.5 bg-gray-200 text-gray-700 rounded-lg cursor-pointer">
-                                  <X size={16} />
-                                </button>
-                              </div>
-                            ) : (
-                              <div className="flex items-center justify-center gap-1">
-                                <button 
-                                  onClick={() => iniciarEdicion(prod)}
-                                  className="p-1.5 text-gray-500 hover:text-purple-800 hover:bg-purple-50 rounded-lg cursor-pointer"
-                                  title="Editar producto"
-                                >
-                                  <Edit2 size={16} />
-                                </button>
-                                <button 
-                                  onClick={() => eliminarProducto(prod)}
-                                  className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
-                                  title="Eliminar producto"
-                                >
-                                  <Trash2 size={16} />
-                                </button>
-                              </div>
-                            )}
-                          </td>
-                        </tr>
+                            <button
+                              onClick={() => iniciarEdicion(prod)}
+                              className="px-3 py-1.5 rounded-xl bg-purple-50 text-purple-900 text-xs font-bold flex items-center gap-1"
+                            >
+                              <Edit2 size={14} /> Editar
+                            </button>
+                            <button
+                              onClick={() => eliminarProducto(prod)}
+                              className="p-1.5 rounded-xl text-red-500 border border-red-100"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
+                        </>
+                      )}
 
-                        {mostrarFoto && (
-                          <tr className="bg-pink-50/40">
-                            <td colSpan="9" className="p-4">
-                              <div className="flex flex-col sm:flex-row items-center gap-4">
-                                {prod.imagen_url ? (
-                                  <img 
-                                    src={prod.imagen_url} 
-                                    alt={prod.nombre_producto} 
-                                    className="w-36 h-36 object-cover rounded-xl border-2 border-white shadow-sm"
-                                  />
-                                ) : (
-                                  <div className="w-36 h-36 rounded-xl bg-white border border-dashed border-pink-300 flex flex-col items-center justify-center text-xs text-gray-400 p-2 text-center">
-                                    Sin foto asignada
-                                  </div>
-                                )}
-                                <div className="space-y-2 flex-1">
-                                  <p className="font-bold text-sm text-gray-800">Imagen de apoyo visual: {prod.nombre_producto}</p>
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <label className="px-3 py-1.5 bg-purple-700 hover:bg-purple-800 text-white rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5">
-                                      <Camera size={14} />
-                                      {subiendoImagen ? 'Subiendo...' : 'Cámara'}
-                                      <input 
-                                        type="file" 
-                                        accept="image/*" 
-                                        capture="environment"
-                                        className="hidden"
-                                        onChange={async (e) => {
-                                          const url = await comprimirYSubirImagen(e.target.files[0])
-                                          if (url) {
-                                            await supabase.from('productos').update({ imagen_url: url }).eq('id', prod.id)
-                                            recargarDatos()
-                                          }
-                                        }}
-                                      />
-                                    </label>
+                      {mostrarFoto && (
+                        <div className="pt-2 border-t border-pink-100 space-y-2">
+                          {prod.imagen_url ? (
+                            <img src={prod.imagen_url} alt={prod.nombre_producto} className="w-28 h-28 object-cover rounded-xl border mx-auto" />
+                          ) : (
+                            <div className="text-center text-xs text-gray-400 py-3">Sin foto asignada</div>
+                          )}
+                          <div className="flex gap-2">
+                            <label className="flex-1 py-2 bg-purple-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1 cursor-pointer">
+                              <Camera size={14} /> Cámara
+                              <input
+                                type="file"
+                                accept="image/*"
+                                capture="environment"
+                                className="hidden"
+                                onChange={async (e) => {
+                                  const url = await comprimirYSubirImagen(e.target.files[0])
+                                  if (url) {
+                                    await supabase.from('productos').update({ imagen_url: url }).eq('id', prod.id)
+                                    recargarDatos()
+                                  }
+                                }}
+                              />
+                            </label>
+                            <label className="flex-1 py-2 bg-destellos-lilac text-purple-950 rounded-xl text-xs font-bold flex items-center justify-center gap-1 cursor-pointer">
+                              <Image size={14} /> Galería
+                              <input
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                onChange={async (e) => {
+                                  const url = await comprimirYSubirImagen(e.target.files[0])
+                                  if (url) {
+                                    await supabase.from('productos').update({ imagen_url: url }).eq('id', prod.id)
+                                    recargarDatos()
+                                  }
+                                }}
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              /* VISTA TABLET / ESCRITORIO DE INVENTARIO (TABLA COMPLETA) */
+              <div className="flex-1 min-h-0 overflow-y-auto bg-white rounded-2xl border border-pink-100 shadow-xs">
+                <table className="w-full text-left border-collapse text-sm">
+                  <thead className="bg-pink-50/70 text-gray-600 text-xs uppercase sticky top-0">
+                    <tr>
+                      <th className="p-3">Código</th>
+                      <th className="p-3">Producto</th>
+                      <th className="p-3">Categoría / Temática</th>
+                      <th className="p-3 text-center">Stock</th>
+                      <th className="p-3 text-right">Costo</th>
+                      <th className="p-3 text-right">Precio</th>
+                      <th className="p-3 text-right">Ganancia Base</th>
+                      <th className="p-3 text-center">Foto</th>
+                      <th className="p-3 text-center">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-pink-50">
+                    {productosFiltrados.map(prod => {
+                      const enEdicion = editandoId === prod.id
+                      const ganancia = Number(prod.precio_publico) - Number(prod.costo_produccion)
+                      const mostrarFoto = imagenExpandidaId === prod.id
 
-                                    <label className="px-3 py-1.5 bg-destellos-lilac hover:bg-purple-200 text-purple-950 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5">
-                                      <Image size={14} />
-                                      {subiendoImagen ? 'Subiendo...' : 'Galería'}
-                                      <input 
-                                        type="file" 
-                                        accept="image/*"
-                                        className="hidden"
-                                        onChange={async (e) => {
-                                          const url = await comprimirYSubirImagen(e.target.files[0])
-                                          if (url) {
-                                            await supabase.from('productos').update({ imagen_url: url }).eq('id', prod.id)
-                                            recargarDatos()
-                                          }
-                                        }}
-                                      />
-                                    </label>
-
-                                    <input 
+                      return (
+                        <Fragment key={prod.id}>
+                          <tr className="hover:bg-pink-50/30">
+                            <td className="p-3 font-mono text-xs">
+                              {enEdicion ? (
+                                <input 
+                                  value={formEdicion.codigo || ''} 
+                                  onChange={e => setFormEdicion({...formEdicion, codigo: e.target.value})}
+                                  className="w-20 border rounded px-1.5 py-1"
+                                />
+                              ) : (prod.codigo || '-')}
+                            </td>
+                            <td className="p-3 font-medium text-gray-800">
+                              {enEdicion ? (
+                                <input 
+                                  value={formEdicion.nombre_producto} 
+                                  onChange={e => setFormEdicion({...formEdicion, nombre_producto: e.target.value})}
+                                  className="w-full border rounded px-2 py-1"
+                                />
+                              ) : prod.nombre_producto}
+                            </td>
+                            <td className="p-3 text-xs">
+                              {enEdicion ? (
+                                <div className="space-y-1">
+                                  <select
+                                    value={formEdicion.categoria}
+                                    onChange={e => setFormEdicion({...formEdicion, categoria: e.target.value})}
+                                    className="border rounded px-1.5 py-1 w-full"
+                                  >
+                                    {CATEGORIAS.filter(c => c !== 'TODAS').map(c => (
+                                      <option key={c} value={c}>{c}</option>
+                                    ))}
+                                  </select>
+                                  {formEdicion.categoria === 'PINES' && (
+                                    <input
                                       type="text"
-                                      placeholder="O pega el link de una imagen aquí..."
-                                      defaultValue={prod.imagen_url || ''}
-                                      onBlur={async (e) => {
-                                        if (e.target.value !== prod.imagen_url) {
-                                          await supabase.from('productos').update({ imagen_url: e.target.value }).eq('id', prod.id)
-                                          recargarDatos()
-                                        }
-                                      }}
-                                      className="px-3 py-1.5 bg-white border border-pink-200 rounded-lg text-xs flex-1 min-w-[200px]"
+                                      list="lista-tematicas"
+                                      placeholder="Temática (ej. GATITOS)"
+                                      value={formEdicion.tematica || ''}
+                                      onChange={e => setFormEdicion({...formEdicion, tematica: e.target.value})}
+                                      className="border border-purple-300 rounded px-1.5 py-1 w-full text-purple-900 font-semibold"
                                     />
-                                  </div>
+                                  )}
                                 </div>
-                              </div>
+                              ) : (
+                                <div className="flex flex-wrap items-center gap-1">
+                                  <span className={`px-2 py-0.5 rounded-full font-semibold ${
+                                    prod.categoria === 'REPOSTERÍA' ? 'bg-amber-100 text-amber-900' : 'bg-purple-50 text-purple-800'
+                                  }`}>
+                                    {prod.categoria}
+                                  </span>
+                                  {prod.tematica && (
+                                    <span className="px-2 py-0.5 rounded-full bg-pink-100 text-pink-900 font-bold text-[11px]">
+                                      {prod.tematica}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+                            <td className="p-3 text-center">
+                              {enEdicion ? (
+                                <input 
+                                  type="number"
+                                  value={formEdicion.cantidad} 
+                                  onChange={e => setFormEdicion({...formEdicion, cantidad: e.target.value})}
+                                  className="w-16 border rounded px-1.5 py-1 text-center font-bold"
+                                />
+                              ) : (
+                                <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                                  prod.cantidad <= 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-800'
+                                }`}>
+                                  {prod.cantidad <= 0 ? 'AGOTADO' : prod.cantidad}
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-3 text-right text-gray-500">
+                              {enEdicion ? (
+                                <input 
+                                  type="number"
+                                  value={formEdicion.costo_produccion} 
+                                  onChange={e => setFormEdicion({...formEdicion, costo_produccion: e.target.value})}
+                                  className="w-20 border rounded px-1.5 py-1 text-right"
+                                />
+                              ) : `$${prod.costo_produccion}`}
+                            </td>
+                            <td className="p-3 text-right font-bold text-gray-900">
+                              {enEdicion ? (
+                                <input 
+                                  type="number"
+                                  value={formEdicion.precio_publico} 
+                                  onChange={e => setFormEdicion({...formEdicion, precio_publico: e.target.value})}
+                                  className="w-20 border rounded px-1.5 py-1 text-right font-bold"
+                                />
+                              ) : `$${prod.precio_publico}`}
+                            </td>
+                            <td className="p-3 text-right font-semibold text-emerald-700">
+                              ${ganancia.toFixed(0)}
+                            </td>
+                            <td className="p-3 text-center">
+                              <button
+                                onClick={() => setImagenExpandidaId(mostrarFoto ? null : prod.id)}
+                                className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                                  prod.imagen_url 
+                                    ? 'border-purple-200 text-purple-700 hover:bg-purple-50' 
+                                    : 'border-gray-200 text-gray-400 hover:bg-gray-50'
+                                }`}
+                                title="Ver / Editar imagen de apoyo"
+                              >
+                                {mostrarFoto ? <EyeOff size={16} /> : <Eye size={16} />}
+                              </button>
+                            </td>
+                            <td className="p-3 text-center">
+                              {enEdicion ? (
+                                <div className="flex items-center justify-center gap-1">
+                                  <button onClick={guardarEdicion} className="p-1.5 bg-emerald-600 text-white rounded-lg cursor-pointer">
+                                    <Check size={16} />
+                                  </button>
+                                  <button onClick={() => setEditandoId(null)} className="p-1.5 bg-gray-200 text-gray-700 rounded-lg cursor-pointer">
+                                    <X size={16} />
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center justify-center gap-1">
+                                  <button 
+                                    onClick={() => iniciarEdicion(prod)}
+                                    className="p-1.5 text-gray-500 hover:text-purple-800 hover:bg-purple-50 rounded-lg cursor-pointer"
+                                    title="Editar producto"
+                                  >
+                                    <Edit2 size={16} />
+                                  </button>
+                                  <button 
+                                    onClick={() => eliminarProducto(prod)}
+                                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
+                                    title="Eliminar producto"
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                </div>
+                              )}
                             </td>
                           </tr>
-                        )}
-                      </Fragment>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+
+                          {mostrarFoto && (
+                            <tr className="bg-pink-50/40">
+                              <td colSpan="9" className="p-4">
+                                <div className="flex flex-col sm:flex-row items-center gap-4">
+                                  {prod.imagen_url ? (
+                                    <img 
+                                      src={prod.imagen_url} 
+                                      alt={prod.nombre_producto} 
+                                      className="w-36 h-36 object-cover rounded-xl border-2 border-white shadow-sm"
+                                    />
+                                  ) : (
+                                    <div className="w-36 h-36 rounded-xl bg-white border border-dashed border-pink-300 flex flex-col items-center justify-center text-xs text-gray-400 p-2 text-center">
+                                      Sin foto asignada
+                                    </div>
+                                  )}
+                                  <div className="space-y-2 flex-1">
+                                    <p className="font-bold text-sm text-gray-800">Imagen de apoyo visual: {prod.nombre_producto}</p>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <label className="px-3 py-1.5 bg-purple-700 hover:bg-purple-800 text-white rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5">
+                                        <Camera size={14} />
+                                        {subiendoImagen ? 'Subiendo...' : 'Cámara'}
+                                        <input 
+                                          type="file" 
+                                          accept="image/*" 
+                                          capture="environment"
+                                          className="hidden"
+                                          onChange={async (e) => {
+                                            const url = await comprimirYSubirImagen(e.target.files[0])
+                                            if (url) {
+                                              await supabase.from('productos').update({ imagen_url: url }).eq('id', prod.id)
+                                              recargarDatos()
+                                            }
+                                          }}
+                                        />
+                                      </label>
+
+                                      <label className="px-3 py-1.5 bg-destellos-lilac hover:bg-purple-200 text-purple-950 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5">
+                                        <Image size={14} />
+                                        {subiendoImagen ? 'Subiendo...' : 'Galería'}
+                                        <input 
+                                          type="file" 
+                                          accept="image/*"
+                                          className="hidden"
+                                          onChange={async (e) => {
+                                            const url = await comprimirYSubirImagen(e.target.files[0])
+                                            if (url) {
+                                              await supabase.from('productos').update({ imagen_url: url }).eq('id', prod.id)
+                                              recargarDatos()
+                                            }
+                                          }}
+                                        />
+                                      </label>
+
+                                      <input 
+                                        type="text"
+                                        placeholder="O pega el link de una imagen aquí..."
+                                        defaultValue={prod.imagen_url || ''}
+                                        onBlur={async (e) => {
+                                          if (e.target.value !== prod.imagen_url) {
+                                            await supabase.from('productos').update({ imagen_url: e.target.value }).eq('id', prod.id)
+                                            recargarDatos()
+                                          }
+                                        }}
+                                        className="px-3 py-1.5 bg-white border border-pink-200 rounded-lg text-xs flex-1 min-w-[200px]"
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
         {/* ==================== MÓDULO 3: AGREGAR PRODUCTO ==================== */}
         {vistaActiva === 'agregar' && (
-          <div className="flex-1 overflow-y-auto p-4 md:p-6 flex justify-center items-start w-full">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 flex justify-center items-start w-full">
             <form onSubmit={crearProducto} className="w-full max-w-lg bg-white p-5 md:p-6 rounded-2xl border border-pink-100 shadow-sm space-y-4">
               <h2 className="text-xl font-bold text-gray-800 border-b border-pink-100 pb-3">
                 Registrar Nuevo Producto
@@ -2901,7 +2960,7 @@ export default function App() {
 
         {/* ==================== MÓDULO 4: PROMOCIONES AUTOMÁTICAS ==================== */}
         {vistaActiva === 'promociones' && (
-          <div className="flex-1 overflow-y-auto p-4 md:p-6 w-full">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 w-full">
             <div className="mb-4">
               <h2 className="text-2xl font-bold text-gray-800">Promociones Automáticas</h2>
               <p className="text-xs text-gray-500">
@@ -3107,8 +3166,8 @@ export default function App() {
 
         {/* ==================== MÓDULO 5: CALENDARIO DE ENTREGAS ==================== */}
         {vistaActiva === 'calendario' && (
-          <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden w-full">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+          <div className="flex-1 min-h-0 flex flex-col p-4 md:p-6 overflow-hidden w-full">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4 shrink-0">
               <div>
                 <h2 className="text-2xl font-bold text-gray-800">Calendario de Entregas</h2>
                 <p className="text-xs text-gray-500">
@@ -3123,7 +3182,7 @@ export default function App() {
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
               {pedidos.length === 0 ? (
                 <div className="bg-white rounded-2xl p-10 text-center text-gray-400 border border-pink-100">
                   <Calendar size={48} className="mx-auto mb-2 opacity-30" />
@@ -3232,7 +3291,7 @@ export default function App() {
 
         {/* ==================== MÓDULO 6: REGISTRAR PEDIDO POR ENCARGO ==================== */}
         {vistaActiva === 'pedidos' && (
-          <div className="flex-1 overflow-y-auto p-4 md:p-6 flex justify-center items-start w-full">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 flex justify-center items-start w-full">
             <form onSubmit={crearPedido} className="w-full max-w-lg bg-white p-5 md:p-6 rounded-2xl border border-pink-100 shadow-sm space-y-4">
               <h2 className="text-xl font-bold text-gray-800 border-b border-pink-100 pb-3 flex items-center gap-2">
                 <ClipboardList size={22} className="text-purple-700" />
@@ -3342,7 +3401,7 @@ export default function App() {
 
         {/* ==================== MÓDULO 7: FINANZAS, BILLETERAS Y FONDOS ==================== */}
         {vistaActiva === 'finanzas' && (
-          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 w-full">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 space-y-6 w-full">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-bold text-gray-800">Centro Financiero y Fondos</h2>
@@ -3819,13 +3878,13 @@ export default function App() {
 
         {/* ==================== MÓDULO 8: TICKETS ==================== */}
         {vistaActiva === 'tickets' && (
-          <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden w-full">
-            <div className="mb-4">
+          <div className="flex-1 min-h-0 flex flex-col p-4 md:p-6 overflow-hidden w-full">
+            <div className="mb-4 shrink-0">
               <h2 className="text-2xl font-bold text-gray-800">Historial de Tickets</h2>
               <p className="text-xs text-gray-500">Consulta todos los recibos de piso y pedidos entregados</p>
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
               {ventas.length === 0 ? (
                 <div className="bg-white rounded-2xl p-10 text-center text-gray-400 border border-pink-100">
                   <Receipt size={48} className="mx-auto mb-2 opacity-30" />
@@ -3907,17 +3966,17 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== MÓDULO 9: CORTES DE CAJA DIVIDIDOS (JOYERÍA VS REPOSTERÍA) ==================== */}
+        {/* ==================== MÓDULO 9: CORTES DE CAJA DIVIDIDOS ==================== */}
         {vistaActiva === 'cortes' && (
-          <div className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden w-full">
-            <div className="mb-4">
+          <div className="flex-1 min-h-0 flex flex-col p-4 md:p-6 overflow-hidden w-full">
+            <div className="mb-4 shrink-0">
               <h2 className="text-2xl font-bold text-gray-800">Cortes de Caja por Día</h2>
               <p className="text-xs text-gray-500">
                 Desglose diario general y separación exacta entre Joyería y Repostería para repartir el dinero en sus fondos.
               </p>
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-4 pr-1">
               {listaCortes.length === 0 ? (
                 <div className="bg-white rounded-2xl p-10 text-center text-gray-400 border border-pink-100">
                   <BarChart3 size={48} className="mx-auto mb-2 opacity-30" />
@@ -3942,7 +4001,6 @@ export default function App() {
                             </h3>
                           </div>
 
-                          {/* Totales Generales del Día */}
                           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 flex-1 max-w-3xl">
                             <div className="p-2.5 rounded-xl bg-emerald-50/70 border border-emerald-100">
                               <span className="text-[10px] text-emerald-800 font-semibold block">Efectivo Total</span>
@@ -3975,9 +4033,7 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* SEPARACIÓN MONETARIA: JOYERÍA VS REPOSTERÍA (GALLETAS) */}
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-2 border-t border-pink-100">
-                          {/* Caja Joyería */}
                           <div className="p-3 rounded-xl bg-purple-50/60 border border-purple-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                             <div>
                               <span className="text-xs font-extrabold text-purple-950 flex items-center gap-1.5">
@@ -4002,7 +4058,6 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Caja Repostería */}
                           <div className="p-3 rounded-xl bg-amber-50/70 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                             <div>
                               <span className="text-xs font-extrabold text-amber-950 flex items-center gap-1.5">
@@ -4075,7 +4130,7 @@ export default function App() {
 
         {/* ==================== MÓDULO 10: ANALÍTICAS PRECISAS Y GUÍA DE RESURTIDO ==================== */}
         {vistaActiva === 'analiticas' && (
-          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 w-full">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 space-y-6 w-full">
             <div>
               <h2 className="text-2xl font-bold text-gray-800">Analíticas Reales y Guía de Resurtido</h2>
               <p className="text-xs text-gray-500">
@@ -4271,27 +4326,30 @@ export default function App() {
       </main>
 
       {/* BARRA DE NAVEGACIÓN INFERIOR PARA TELÉFONOS MÓVILES */}
-      <nav className="md:hidden bg-white border-t border-pink-200 px-2 py-1.5 flex items-center gap-1 overflow-x-auto shrink-0 z-20">
-        {ITEMS_MENU.map(item => {
-          const Icono = item.icon
-          const activo = vistaActiva === item.id
-          return (
-            <button
-              key={item.id}
-              onClick={() => setVistaActiva(item.id)}
-              className={`flex flex-col items-center justify-center min-w-[64px] py-1.5 px-2 rounded-xl text-[10px] font-bold transition-all shrink-0 ${
-                activo
-                  ? 'bg-destellos-lilac text-purple-950 font-extrabold shadow-2xs'
-                  : 'text-gray-500'
-              }`}
-            >
-              <Icono size={17} className="mb-0.5" />
-              <span>{item.label}</span>
-            </button>
-          )
-        })}
-      </nav>
+      {esPantallaMovil && (
+        <nav className="bg-white border-t border-pink-200 px-2 py-1.5 flex items-center gap-1 overflow-x-auto shrink-0 z-20">
+          {ITEMS_MENU.map(item => {
+            const Icono = item.icon
+            const activo = vistaActiva === item.id
+            return (
+              <button
+                key={item.id}
+                onClick={() => setVistaActiva(item.id)}
+                className={`flex flex-col items-center justify-center min-w-[62px] py-1.5 px-2 rounded-xl text-[10px] font-bold transition-all shrink-0 cursor-pointer ${
+                  activo
+                    ? 'bg-destellos-lilac text-purple-950 font-extrabold shadow-2xs'
+                    : 'text-gray-500'
+                }`}
+              >
+                <Icono size={17} className="mb-0.5" />
+                <span>{item.label}</span>
+              </button>
+            )
+          })}
+        </nav>
+      )}
 
+      
       {/* ==================== MODAL RÁPIDO PARA ABONAR / EXTRAER DE UN FONDO ==================== */}
       {modalFondoAccion && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
